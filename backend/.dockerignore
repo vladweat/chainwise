@@ -1,0 +1,9 @@
+# Не копируем мусор; .venv/lib нужен для offline-сборки
+.git
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.venv/bin
+.venv/include
+.venv/pyvenv.cfg
+.venv/share

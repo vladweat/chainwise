@@ -1,0 +1,3 @@
+fastapi>=0.115.0,<0.116
+uvicorn>=0.32.0,<0.33
+slither-analyzer>=0.10.4,<0.12

@@ -1,0 +1,60 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Poetry
+poetry.toml
+
+# Node / Frontend
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+docker-compose.kodik.yml
+
+# ML artifacts (keep model.pkl tracked if present)
+ml_models/*.pkl.bak
+
+# solc binaries (downloaded by make venv / make solc)
+backend/.solc/*
+!backend/.solc/.gitkeep
+
+# MiniLM weights (downloaded by make embeddings)
+backend/.models/*
+!backend/.models/.gitkeep
+
+# Host libs copied for offline Docker (libgomp)
+backend/.libs/*
+!backend/.libs/.gitkeep

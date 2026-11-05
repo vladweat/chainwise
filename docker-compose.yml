@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chainwise}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_in_prod}
+      POSTGRES_DB: ${POSTGRES_DB:-chainwise_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chainwise} -d ${POSTGRES_DB:-chainwise_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    image: chainwise-backend:latest
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      network: none
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      SOLCX_BINARY_PATH: /app/.solc
+      SLITHER_URL: http://slither:8000
+      EMBEDDING_MODEL_PATH: /app/.models
+      RISK_MODEL_PATH: /app/ml_models/risk_xgb_model.pkl
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      LD_LIBRARY_PATH: /usr/local/lib
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,qdrant,slither
+      no_proxy: localhost,127.0.0.1,postgres,redis,qdrant,slither
+    volumes:
+      - ./backend:/app
+      - ./ml_models:/app/ml_models:ro
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      slither:
+        condition: service_healthy
+
+  celery-worker:
+    image: chainwise-backend:latest
+    command: python -m celery -A app.celery_config worker -l info
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      SOLCX_BINARY_PATH: /app/.solc
+      SLITHER_URL: http://slither:8000
+      EMBEDDING_MODEL_PATH: /app/.models
+      RISK_MODEL_PATH: /app/ml_models/risk_xgb_model.pkl
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      LD_LIBRARY_PATH: /usr/local/lib
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,qdrant,slither
+      no_proxy: localhost,127.0.0.1,postgres,redis,qdrant,slither
+    volumes:
+      - ./backend:/app
+      - ./ml_models:/app/ml_models:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      backend:
+        condition: service_started
+      slither:
+        condition: service_healthy
+
+  slither:
+    build:
+      context: ./slither
+      dockerfile: Dockerfile
+      network: none
+    volumes:
+      - ./backend/.solc:/opt/solc:ro
+    environment:
+      SOLC_DIR: /opt/solc
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      network: none
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8001
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    ports:
+      - "3001:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8001
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  qdrant_data:
