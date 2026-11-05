@@ -59,6 +59,7 @@ def test_analyze_rate_limit(monkeypatch):
 
 def test_chat_rate_limit(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_CHAT_PER_MINUTE", "1")
+    monkeypatch.setattr("app.services.rag.retrieval.hybrid_search", lambda *_args, **_kwargs: [])
     get_settings.cache_clear()
     headers = _auth()
     me = client.get("/api/v1/auth/me", headers=headers)
