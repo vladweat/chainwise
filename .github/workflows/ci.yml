@@ -59,7 +59,7 @@ jobs:
           --health-timeout 3s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql://chainwise:chainwise@localhost:5432/chainwise_db
+      DATABASE_URL: postgresql+psycopg2://chainwise:chainwise@localhost:5432/chainwise_db
       REDIS_URL: redis://localhost:6379/0
       CELERY_BROKER_URL: redis://localhost:6379/0
       CELERY_RESULT_BACKEND: redis://localhost:6379/0

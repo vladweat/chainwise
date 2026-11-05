@@ -42,7 +42,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
@@ -81,7 +81,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0

@@ -13,7 +13,7 @@ TEST_DB_NAME = "chainwise_test"
 
 _ORIGINAL_DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql://chainwise:change_this_in_prod@postgres:5432/chainwise_db",
+    "postgresql+psycopg2://chainwise:change_this_in_prod@postgres:5432/chainwise_db",
 )
 
 

@@ -144,7 +144,7 @@ docker compose run --rm -p 8002:8000 slither
 ```bash
 cd backend
 source .venv/bin/activate
-export DATABASE_URL=postgresql://chainwise:change_this_in_prod@localhost:5432/chainwise_db
+export DATABASE_URL=postgresql+psycopg2://chainwise:change_this_in_prod@localhost:5432/chainwise_db
 export REDIS_URL=redis://localhost:6379/0
 export QDRANT_URL=http://localhost:6333
 export SLITHER_URL=http://localhost:8002

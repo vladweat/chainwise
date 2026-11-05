@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = Field(
-        default="postgresql://chainwise:change_this_in_prod@localhost:5432/chainwise_db",
+        default="postgresql+psycopg2://chainwise:change_this_in_prod@localhost:5432/chainwise_db",
         alias="DATABASE_URL",
     )
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")

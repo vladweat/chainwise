@@ -10,7 +10,7 @@
 POSTGRES_USER=chainwise
 POSTGRES_PASSWORD=change_this_in_prod
 POSTGRES_DB=chainwise_db
-DATABASE_URL=postgresql://chainwise:change_this_in_prod@postgres:5432/chainwise_db
+DATABASE_URL=postgresql+psycopg2://chainwise:change_this_in_prod@postgres:5432/chainwise_db
 REDIS_URL=redis://redis:6379/0
 QDRANT_URL=http://qdrant:6333
 QDRANT_API_KEY=
@@ -89,7 +89,7 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | `POSTGRES_USER` | `chainwise` | Пользователь PostgreSQL |
 | `POSTGRES_PASSWORD` | `change_this_in_prod` | Пароль PostgreSQL |
 | `POSTGRES_DB` | `chainwise_db` | Имя БД |
-| `DATABASE_URL` | `postgresql://...@postgres:5432/...` | SQLAlchemy |
+| `DATABASE_URL` | `postgresql+psycopg2://...@postgres:5432/...` | SQLAlchemy |
 
 ### Кеш и брокер
 
