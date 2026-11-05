@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+import redis
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def reset_settings():
+    get_settings.cache_clear()
     yield
     get_settings.cache_clear()
 
@@ -96,3 +98,19 @@ def test_chat_rate_limit(monkeypatch):
     )
     assert second.status_code == 429
     get_settings.cache_clear()
+
+
+def test_analyze_rate_limit_fails_open_when_redis_is_unavailable(monkeypatch):
+    monkeypatch.setenv("RATE_LIMIT_ANALYZE_PER_MINUTE", "10")
+
+    def unavailable_redis():
+        raise redis.ConnectionError("Redis unavailable")
+
+    monkeypatch.setattr("app.utils.rate_limit.get_redis_client", unavailable_redis)
+    response = client.post(
+        "/api/v1/contracts/analyze",
+        json={"address": "not-an-address", "chain_id": 1},
+        headers=_auth(),
+    )
+
+    assert response.status_code == 400

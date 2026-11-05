@@ -1,5 +1,6 @@
 .git
 .next
 out
+build
 *.md
 npm-debug.log*

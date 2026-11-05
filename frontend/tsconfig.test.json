@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "noEmit": false,
+    "incremental": false,
+    "outDir": "build/test-lib",
+    "rootDir": "src/lib"
+  },
+  "include": ["src/lib/contract-status.ts"]
+}

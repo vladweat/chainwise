@@ -32,6 +32,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm test
 
   backend-test:
     runs-on: ubuntu-latest
@@ -75,4 +76,7 @@ jobs:
         run: pip install -r backend/requirements.txt
       - name: Run pytest
         working-directory: backend
-        run: python -m pytest tests/ -v --cov=app.utils.pragma_parser --cov=app.services.risk_scorer --cov-fail-under=80 --cov-report=term-missing
+        run: python -m pytest tests/ -v --cov=app --cov-report=term-missing
+      - name: Preserve focused coverage gate
+        working-directory: backend
+        run: python -m coverage report --include=app/utils/pragma_parser.py,app/services/risk_scorer.py --fail-under=80

@@ -48,8 +48,9 @@ logs-frontend:
 # pytest ходит в chainwise_test, не в рабочую БД
 test:
 	docker compose exec backend python -m pytest tests/ -v \
-		--cov=app.utils.pragma_parser --cov=app.services.risk_scorer \
-		--cov-fail-under=80 --cov-report=term-missing
+		--cov=app --cov-report=term-missing
+	docker compose exec backend python -m coverage report \
+		--include=app/utils/pragma_parser.py,app/services/risk_scorer.py --fail-under=80
 
 lint:
 	docker compose exec backend python -m flake8 app tests scripts
