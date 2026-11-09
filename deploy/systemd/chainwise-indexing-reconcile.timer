@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ChainWise indexing reconciliation every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=chainwise-indexing-reconcile.service
+
+[Install]
+WantedBy=timers.target

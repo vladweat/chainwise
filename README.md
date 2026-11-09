@@ -47,7 +47,7 @@ make health
 make smoke-e2e
 ```
 
-Это ограниченный **mocked API smoke**, не браузерный live E2E: он загружает синтетический Solidity-контракт, проверяет индексацию, findings, advisory Risk Score, чужой tenant-доступ, цитаты и PDF; компилятор, Slither, Qdrant и LLM подменены заглушками. Используются PostgreSQL и Redis, а записи теста удаляются. Платные LLM credentials и настоящие пользовательские данные не нужны. Ручной live-сценарий описан в [smoke/E2E](./docs/smoke-e2e.md).
+Это ограниченный **mocked API smoke**, не браузерный live E2E: он загружает синтетический Solidity-контракт, проверяет индексацию, findings, advisory Risk Score, чужой tenant-доступ, цитаты и PDF; компилятор, Slither, Qdrant и LLM подменены заглушками. Используются PostgreSQL и Redis, а записи теста удаляются. Платные LLM credentials и настоящие пользовательские данные не нужны. Опциональный прогон настоящих solc, Slither, FastEmbed и Qdrant описан в [smoke/E2E](./docs/smoke-e2e.md).
 
 ## Проверки и CI
 
@@ -62,4 +62,4 @@ GitHub Actions на push и pull request запускает flake8, TypeScript t
 
 ## Документация
 
-[Архитектура](./docs/architecture.md) · [Установка](./docs/setup.md) · [Эксплуатация](./docs/operations.md) · [Безопасность](./docs/security.md) · [API](./docs/api.md) · [Документация целиком](./docs/README.md)
+[Архитектура](./docs/architecture.md) · [Установка](./docs/setup.md) · [Фоновые задачи и решения по восстановлению](./docs/background-jobs.md) · [Эксплуатация](./docs/operations.md) · [Безопасность](./docs/security.md) · [API](./docs/api.md) · [Результаты проверок](./docs/verification-results.md) · [Документация целиком](./docs/README.md)

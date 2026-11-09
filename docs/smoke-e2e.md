@@ -32,23 +32,22 @@ Backend CI job запускает `pytest tests/`, поэтому обнаруж
 
 ## Необязательная ручная live-проверка
 
-Она проверяет интеграции, отсутствующие в mocked smoke. Нужны подготовленные solc/Slither/embedding artifacts, работающий analyzer sidecar и локальный OpenAI-compatible endpoint с ключом (можно локальный сервис; платный API не обязателен):
+Тест `backend/tests/test_live_e2e.py` проходит тот же API flow с настоящими solc, Slither, FastEmbed и Qdrant; OpenAI-compatible chat mock-ается по умолчанию. Он запускается отдельно от быстрой mocked-проверки:
 
-1. Настройте локальный `.env`, включая `OPENAI_BASE_URL` и соответствующий `OPENAI_API_KEY`, если выбранный endpoint требует ключ. Не используйте реальные пользовательские данные.
-2. Запустите `make up` и проверьте `make health`.
-3. В интерфейсе откройте `http://localhost:3001`, зарегистрируйте временный demo-аккаунт и загрузите следующий исходник как `SmokeDemo.sol`:
+```bash
+make deps                    # заранее подготавливает allowlisted solc и MiniLM
+make up
+make health
+docker compose exec -T backend env \
+  CHAINWISE_LIVE_E2E=1 \
+  CHAINWISE_LIVE_E2E_MOCK_LLM=1 \
+  python -m pytest tests/test_live_e2e.py -v
+```
 
-   ```solidity
-   pragma solidity ^0.8.24;
+Тест использует синтетический `LiveDemo.sol`, выполняет compile, Slither, embeddings, Qdrant retrieval, Findings/Risk Score, tenant denial, citations и PDF; контракт также должен вызвать реальное Slither finding `immutable-states`. Негативный сценарий проверяет повреждённый ZIP. Celery задача исполняется eagerly; polling ограничен 120 секундами, analyzer HTTP calls — 20 секундами и одним коротким повтором при capacity 503, Qdrant client — 10 секундами. `finally` удаляет контракт и оба временных аккаунта, затем подтверждает, что они больше недоступны. Не запускайте этот тест против production базы.
 
-   contract SmokeDemo {
-       function ping() public pure returns (uint256) {
-           return 7;
-       }
-   }
-   ```
+Для единственного настоящего LLM-вызова задайте в `.env` ключ для выбранного OpenAI-compatible endpoint и удалите `CHAINWISE_LIVE_E2E_MOCK_LLM=1` из команды. Тест отправляет один вопрос. Не используйте ключ с платным бюджетом без установленного лимита. Тест может работать без внешнего endpoint с mock-ответом: в этом режиме retrieval, embeddings и citations настоящие, а только генерация текста заменена.
 
-4. Дождитесь `READY`; проверьте findings и advisory Risk Score notice, затем спросите: `What does ping return? Cite the source path and line range.` Убедитесь, что ответ содержит citations, скачайте PDF.
-5. Удалите контракт и demo-аккаунт через интерфейс.
+Негативный кейс, polling limit и tenant denial входят в автоматический live test; отдельный ручной UI прогон можно выполнить через `http://localhost:3001`, но он не является частью CI.
 
-Этот ручной сценарий дополнительно затрагивает установленный solc, Slither sidecar, FastEmbed, Qdrant и реальную модель/endpoint. Они не выполняются в CI и не проверяются `make smoke-e2e`; реальный analyzer, embeddings и качество/grounding ответов внешней модели остаются за пределами автоматического smoke.
+GitHub Actions не включает подготовку бинарников solc и FastEmbed и запускает live test как skipped; он выполняет быстрый mocked smoke. Поэтому CI не доказывает корректность установленных analyzer/model artifacts. Живой прогон фиксируется отдельно в [результатах проверок](./verification-results.md).

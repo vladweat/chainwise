@@ -18,6 +18,40 @@ from app.services.indexing_lifecycle import (
     claim_indexing_attempt,
     reconcile_stale_indexing,
 )
+from app.services.qdrant_reconciler import reconcile_qdrant_generations
+
+
+class _FakeQdrant:
+    def __init__(self, points):
+        self._order = [point.id for point in points]
+        self._points = {point.id: point for point in points}
+        self.deleted = []
+
+    def collection_exists(self, _collection_name):
+        return True
+
+    def scroll(self, *, limit, offset=None, **_kwargs):
+        start = 0 if offset is None else self._order.index(offset) + 1
+        available = [
+            self._points[point_id]
+            for point_id in self._order[start:]
+            if point_id in self._points
+        ]
+        page = available[:limit]
+        next_offset = page[-1].id if len(available) > limit else None
+        return page, next_offset
+
+    def delete(self, *, points_selector, **_kwargs):
+        self.deleted.extend(points_selector)
+        for point_id in points_selector:
+            self._points.pop(point_id, None)
+
+
+def _qdrant_point(point_id, contract_id, generation):
+    return SimpleNamespace(
+        id=point_id,
+        payload={"contract_id": contract_id, "indexing_attempt_id": generation},
+    )
 
 
 @pytest.fixture
@@ -115,6 +149,183 @@ def test_postgres_reconciliation_skips_row_during_valid_update(postgres_contract
     assert current.status == ContractStatus.INDEXING.value
     assert current.indexing_heartbeat_at > datetime.now(UTC) - timedelta(minutes=1)
     verify.close()
+
+
+def test_postgres_reconciles_only_stale_indexing_rows(postgres_contract):
+    db = SessionLocal()
+    stale = db.query(Contract).filter(Contract.id == postgres_contract).one()
+    stale.indexing_heartbeat_at = datetime.now(UTC) - timedelta(hours=2)
+    active = Contract(
+        user_id=stale.user_id,
+        address=f"0x{uuid.uuid4().hex[:40]}",
+        chain_id=1,
+        status=ContractStatus.INDEXING.value,
+        indexing_attempt_id="attempt-active",
+        indexing_heartbeat_at=datetime.now(UTC),
+    )
+    ready = Contract(
+        user_id=stale.user_id,
+        address=f"0x{uuid.uuid4().hex[:40]}",
+        chain_id=1,
+        status=ContractStatus.READY.value,
+        indexing_attempt_id="attempt-finished",
+        indexing_heartbeat_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    db.add_all([active, ready])
+    db.commit()
+    active_id, ready_id = active.id, ready.id
+
+    failed_ids = reconcile_stale_indexing(
+        db,
+        stale_before=datetime.now(UTC) - timedelta(hours=1),
+    )
+
+    assert failed_ids == [postgres_contract]
+    db.expire_all()
+    assert db.query(Contract).filter(Contract.id == postgres_contract).one().status == "failed"
+    assert db.query(Contract).filter(Contract.id == active_id).one().status == "indexing"
+    assert db.query(Contract).filter(Contract.id == ready_id).one().status == "ready"
+    db.close()
+
+
+def test_qdrant_reconciliation_keeps_current_generations_and_removes_orphans(
+    postgres_contract,
+):
+    db = SessionLocal()
+    client = _FakeQdrant(
+        [
+            _qdrant_point("previous", postgres_contract, "generation-previous"),
+            _qdrant_point("active", postgres_contract, "attempt-old"),
+            _qdrant_point("stale", postgres_contract, "generation-stale"),
+            _qdrant_point("orphan", postgres_contract + 100000, "attempt-orphan"),
+            _qdrant_point("legacy", postgres_contract, None),
+        ]
+    )
+
+    preview = reconcile_qdrant_generations(
+        db, client=client, dry_run=True, batch_size=2
+    )
+    assert preview == {
+        "orphan_points": 1,
+        "stale_generation_points": 2,
+        "unclassified_points": 0,
+        "deleted_points": 0,
+    }
+    assert len(client._points) == 5
+
+    applied = reconcile_qdrant_generations(
+        db, client=client, dry_run=False, batch_size=2
+    )
+    assert applied["deleted_points"] == 3
+    assert set(client._points) == {"previous", "active"}
+    assert reconcile_qdrant_generations(db, client=client, dry_run=False)[
+        "deleted_points"
+    ] == 0
+    db.close()
+
+
+def test_qdrant_reconciliation_with_live_qdrant(postgres_contract, monkeypatch):
+    qdrant_client = pytest.importorskip("qdrant_client")
+    from qdrant_client.models import Distance, PointStruct, VectorParams
+
+    from app.core.config import get_settings
+    from app.services import qdrant_reconciler
+
+    settings = get_settings()
+    try:
+        client = qdrant_client.QdrantClient(
+            url=settings.qdrant_url,
+            timeout=5,
+            trust_env=False,
+        )
+        client.get_collections()
+    except Exception as exc:
+        pytest.skip(f"Live Qdrant is unavailable: {type(exc).__name__}")
+
+    collection = f"reconcile-test-{uuid.uuid4().hex[:12]}"
+    client.create_collection(
+        collection_name=collection,
+        vectors_config=VectorParams(size=3, distance=Distance.COSINE),
+    )
+    monkeypatch.setattr(qdrant_reconciler, "COLLECTION_NAME", collection)
+    client.upsert(
+        collection_name=collection,
+        wait=True,
+        points=[
+            PointStruct(
+                id=1,
+                vector=[0.1, 0.2, 0.3],
+                payload={
+                    "contract_id": postgres_contract,
+                    "indexing_attempt_id": "generation-previous",
+                },
+            ),
+            PointStruct(
+                id=2,
+                vector=[0.2, 0.3, 0.4],
+                payload={"contract_id": postgres_contract, "indexing_attempt_id": "old"},
+            ),
+            PointStruct(
+                id=3,
+                vector=[0.3, 0.4, 0.5],
+                payload={"contract_id": postgres_contract, "indexing_attempt_id": "attempt-old"},
+            ),
+            PointStruct(
+                id=4,
+                vector=[0.4, 0.5, 0.6],
+                payload={"contract_id": postgres_contract + 100000, "indexing_attempt_id": "orphan"},
+            ),
+        ],
+    )
+    db = SessionLocal()
+    try:
+        result = reconcile_qdrant_generations(
+            db,
+            client=client,
+            dry_run=False,
+            batch_size=1,
+        )
+        assert result["stale_generation_points"] == 1
+        assert result["orphan_points"] == 1
+        assert result["deleted_points"] == 2
+        records, _ = client.scroll(
+            collection_name=collection,
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+        assert {record.id for record in records} == {1, 3}
+    finally:
+        db.close()
+        client.delete_collection(collection)
+        client.close()
+
+
+def test_contract_delete_qdrant_failure_is_recovered_by_reconciliation(
+    postgres_contract, monkeypatch
+):
+    from app.services import contract_service
+
+    db = SessionLocal()
+    contract = db.query(Contract).filter(Contract.id == postgres_contract).one()
+    owner = db.query(User).filter(User.id == contract.user_id).one()
+    client = _FakeQdrant(
+        [_qdrant_point("orphan-after-delete", postgres_contract, "attempt-old")]
+    )
+    monkeypatch.setattr(
+        contract_service,
+        "delete_contract_chunks",
+        lambda _contract_id: (_ for _ in ()).throw(RuntimeError("Qdrant unavailable")),
+    )
+
+    contract_service.delete_contract(db, postgres_contract, owner)
+
+    assert db.query(Contract).filter(Contract.id == postgres_contract).first() is None
+    result = reconcile_qdrant_generations(db, client=client, dry_run=False)
+    assert result["orphan_points"] == 1
+    assert result["deleted_points"] == 1
+    assert client._points == {}
+    db.close()
 
 
 def test_postgres_old_worker_cannot_finish_after_reconciliation(
