@@ -29,6 +29,7 @@ from app.services.contract_service import (
     list_contracts_for_user,
 )
 from app.services.rag_engine import OpenAINotConfiguredError, OpenAIRequestError, RagError
+from app.services.upload_handler import UploadTooLargeError, read_upload_file
 from app.utils.rate_limit import enforce_rate_limit
 
 router = APIRouter(prefix="/contracts", tags=["contracts"])
@@ -68,7 +69,13 @@ async def analyze_upload(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_analyze_limit),
 ) -> AnalyzeResponse:
-    content = await file.read()
+    try:
+        content = await read_upload_file(file)
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
     filename = file.filename or "contract.sol"
     return analyze_by_upload(db, current_user, filename, content, chain_id=chain_id)
 

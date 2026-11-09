@@ -33,6 +33,7 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
+      - run: npm run test:risk-copy
 
   backend-test:
     runs-on: ubuntu-latest

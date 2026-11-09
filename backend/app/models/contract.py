@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -10,6 +10,7 @@ class Contract(Base):
     __tablename__ = "contracts"
     __table_args__ = (
         UniqueConstraint("user_id", "address", "chain_id", name="uq_contracts_user_address_chain"),
+        Index("ix_contracts_status_indexing_heartbeat", "status", "indexing_heartbeat_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -21,6 +22,10 @@ class Contract(Base):
     is_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
     indexing_step: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    indexing_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    analysis_generation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    indexing_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    indexing_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     risk_score: Mapped[str | None] = mapped_column(String(1), nullable=True)
     risk_model: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -37,8 +42,17 @@ class Contract(Base):
         cascade="all, delete-orphan",
         lazy="select",
     )
-    analysis_reports = relationship("AnalysisReport", back_populates="contract")
-    chat_messages = relationship("ChatMessage", back_populates="contract")
+    # Both child tables declare database-level ON DELETE CASCADE foreign keys.
+    analysis_reports = relationship(
+        "AnalysisReport",
+        back_populates="contract",
+        passive_deletes=True,
+    )
+    chat_messages = relationship(
+        "ChatMessage",
+        back_populates="contract",
+        passive_deletes=True,
+    )
 
     def __init__(self, **kwargs):
         source_code = kwargs.pop("source_code", None)

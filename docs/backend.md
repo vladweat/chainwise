@@ -49,6 +49,7 @@ backend/
 │   │   ├── slither_runner.py
 │   │   ├── semantic_splitter.py
 │   │   ├── qdrant_indexer.py
+│   │   ├── indexing_lifecycle.py   # attempt claim, fencing, stale reconciliation
 │   │   ├── rag_engine.py          # thin re-export
 │   │   ├── rag/                   # retrieval, prompting, llm_client, cache, engine
 │   │   ├── pdf_report.py
@@ -59,6 +60,8 @@ backend/
 │   │   ├── contract_artifact.py
 │   │   ├── contract_status.py     # status enum + transitions
 │   │   └── indexing_step.py
+│   ├── scripts/
+│   │   └── reconcile_indexing.py  # deterministic stale-row recovery
 │   └── utils/
 │       ├── logging.py
 │       ├── rate_limit.py
@@ -79,8 +82,8 @@ backend/
 
 Celery-задача `indexing.load_contract` (шаги пишутся в `contracts.indexing_step`):
 
-1. `compile` — pragma + `compile_to_ast` → artifact.ast
-2. `slither` — HTTP `POST {SLITHER_URL}/analyze` → artifact.slither_report
+1. `compile` — pragma + `POST {SLITHER_URL}/compile` to isolated analyzer → artifact.ast
+2. `slither` — HTTP `POST {SLITHER_URL}/analyze` to the same analyzer → artifact.slither_report
 3. `embed` — semantic split + FastEmbed → Qdrant → `chunk_count`
 4. `score` — XGBoost / heuristic → `risk_score`
 5. `done` + `status=ready`; при ошибке `failed` и `last_error`
@@ -99,21 +102,23 @@ Celery-задача `indexing.load_contract` (шаги пишутся в `contra
 
 Без `OPENAI_API_KEY` при наличии чанков — `503`. Пустой индекс — фиксированный ответ без вызова LLM.
 
-Идемпотентность: Redis-ключ `indexing_lock:{user_id}:{chain_id}:{address}` (TTL 1 час). Повторный analyze для своего `ready`/`loaded` возвращает существующую запись без новой задачи. Пока `indexing` — `409`. Чужой адрес не подтверждается.
+Идемпотентность: Redis-ключ `indexing_lock:{user_id}:{chain_id}:{address}` (TTL 1 час) хранит случайный owner token; API и Celery удаляют его только атомарным compare-and-delete. Token передаётся только в Celery и не входит в публичные схемы. Повторный analyze для своего `ready`/`loaded` возвращает существующую запись без новой задачи. Пока DB-статус `indexing` — `409`; Redis lock не заменяет DB-контроль. Celery task time limit не задан, поэтому TTL не гарантирует, что задача завершится до его истечения; fencing для DB-записей не реализован. Подробности — [жизненный цикл фоновых задач](./background-jobs.md#lock-и-повторные-запросы).
 
-Lock ограничивает дубли, но не обеспечивает exactly-once: owner token, lease renewal и compare-delete отсутствуют. Retry Celery явно не настроен. Полный lifecycle и failure modes — [background-jobs.md](./background-jobs.md).
+Lock ограничивает дубли, но не обеспечивает exactly-once: lease renewal и DB fencing отсутствуют. Retry Celery явно не настроен. Полный lifecycle и failure modes — [background-jobs.md](./background-jobs.md).
 
 ## PDF-отчёт
 
 `GET /contracts/{id}/report` (`pdf_report.py`, fpdf2): контракт `ready` или `loaded`, иначе `409`. В PDF — имя, адрес, chain, дата, risk A–D и детекторы Slither (check / impact / confidence, короткое location); исходный код не включается.
 
-## Slither sidecar
+## Analyzer sidecar
 
-Отдельный сервис `slither/` (FastAPI). Backend не запускает `slither` как subprocess.
+Отдельный сервис `slither/` (FastAPI analyzer). Он запускает только allowlisted preinstalled `solc` и Slither; backend/Celery не исполняют эти бинарники напрямую.
 
 | Метод | Путь | Назначение |
 |---|---|---|
 | GET | `/health` | Healthcheck Compose |
+| GET | `/solc/versions` | Установленные allowlisted версии solc |
+| POST | `/compile` | `{files, solc_version}` → `{solc_version, sources}` с AST |
 | POST | `/analyze` | `{files, solc_version}` → JSON-отчёт Slither |
 
 Бинарники solc монтируются из `backend/.solc`.

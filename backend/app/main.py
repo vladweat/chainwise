@@ -17,9 +17,10 @@ apply_internal_no_proxy()
 from app.api.auth import router as auth_router
 from app.api.contracts import router as contracts_router
 from app.api.history import router as history_router
-from app.core.config import get_settings
+from app.core.config import get_settings, validate_production_launch
 from app.core.csrf import CsrfCookieMiddleware
 from app.core.database import check_postgres
+from app.core.request_limits import UploadRequestSizeLimitMiddleware
 from app.core.sentry import init_sentry
 from app.utils.logging import setup_logging
 
@@ -37,6 +38,7 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    validate_production_launch(settings)
     try:
         _run_migrations()
         logger.info("Database migrations applied")
@@ -59,6 +61,9 @@ app.include_router(contracts_router, prefix="/api/v1")
 app.include_router(history_router, prefix="/api/v1")
 
 app.add_middleware(CsrfCookieMiddleware)
+# This limit must run before FastAPI parses multipart bodies; keep CORS outermost
+# so browser clients also receive CORS headers on a 413 response.
+app.add_middleware(UploadRequestSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list(),

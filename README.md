@@ -1,77 +1,65 @@
 # ChainWise
 
-ChainWise — веб-приложение для предварительного анализа Solidity-контрактов. Оно загружает верифицированный исходник по адресу либо принимает `.sol`/`.zip`, запускает solc и Slither, вычисляет ориентировочный Risk Score A–D и отвечает на вопросы по коду с цитатами.
+ChainWise — локальное веб-приложение для предварительного статического анализа Solidity-кода и поиска по его исходникам с цитатами.
 
-> ChainWise не заменяет профессиональный аудит. Risk Score обучен на синтетических данных, а ответы LLM ограничены найденным контекстом.
+## Что делает система
 
-## Реализованные возможности
+- Принимает `.sol`/`.zip` или загружает верифицированный исходник из поддерживаемого explorer.
+- Компилирует allowlisted-версией `solc`, запускает Slither в ограниченном analyzer sidecar и сохраняет результаты.
+- Индексирует исходники для поиска и RAG-чата; показывает findings, строки исходника, цитаты и PDF-отчёт.
+- Даёт дополнительную оценку A–D: это экспериментальный индикатор предварительной проверки, не вероятность эксплуатации и не аудит безопасности.
 
-- регистрация и вход по email/password или Google ID token;
-- приватные контракты и история чата на пользователя;
-- загрузка из Ethereum, BSC и Abstract explorer либо из файла;
-- асинхронный pipeline `solc → Slither → FastEmbed → Qdrant → Risk Score`;
-- RAG-чат через OpenAI-совместимый API, JSON и SSE, цитаты по строкам;
-- findings, просмотр исходника и PDF-отчёт;
-- Redis rate limits, дневные квоты, кеш ответов и lock индексации.
+## Текущая схема
 
-## Стек
+```mermaid
+flowchart LR
+  Browser --> Frontend[Next.js]
+  Frontend --> API[FastAPI]
+  API --> PostgreSQL
+  API --> Redis[Redis broker/cache]
+  API --> Qdrant
+  Redis --> Worker[Celery worker]
+  Worker --> PostgreSQL
+  Worker --> Qdrant
+  Worker --> Analyzer[Solc + Slither sidecar]
+  API --> LLM[OpenAI-compatible API<br/>для чата]
+```
 
-Python 3.12, FastAPI 0.115, SQLAlchemy 2, Alembic, Celery 5, PostgreSQL 15, Redis 7, Qdrant, FastEmbed MiniLM, Slither, Next.js 15, React 19 и TypeScript 5. Точные ограничения версий находятся в `backend/requirements.txt` и `frontend/package.json`.
+Поток анализа: загрузка исходника → компиляция AST и Slither findings → embeddings в Qdrant → публикация готового поколения; чат ищет только по этому поколению, затем возвращает ответ с citations.
 
-## Требования
+## Локальный Quickstart
 
-- Docker с Compose;
-- Python 3.12 и Node.js 20+ на Linux x86_64 для подготовки offline-зависимостей;
-- доступ в сеть при первом `make deps`;
-- `OPENAI_API_KEY` для чата и `ETHERSCAN_API_KEY` для загрузки по адресу.
-
-## Быстрый старт
+Нужны Docker Compose v2.24+, `make`, Linux x86_64, Python 3.12 и Node.js/npm 20+. Для первой подготовки зависимостей и загрузки базовых Docker-образов требуется интернет. После этого локальные образы собираются без сети: `make deps` заранее подготавливает Python/frontend packages, Slither, allowlisted solc и FastEmbed MiniLM. Перенос подготовленных артефактов между платформами не поддерживается.
 
 ```bash
 cp .env.example .env
-# Замените SECRET_KEY и POSTGRES_PASSWORD; API-ключи не коммитьте.
-make deps
-make up
+# Задайте локальные SECRET_KEY и POSTGRES_PASSWORD; секреты не коммитьте.
+make deps       # первый раз, с интернетом
+make up         # сборка и запуск; Compose build network отключён
 make health
 ```
 
-| Компонент | URL |
-|---|---|
-| Frontend | <http://localhost:3001> |
-| Swagger UI | <http://localhost:8001/docs> |
-| Qdrant Dashboard | <http://localhost:6333/dashboard> |
+Откройте <http://localhost:3001>, Swagger — <http://localhost:8001/docs>. Compose публикует порты только на loopback; backend и worker находят зависимости по именам Compose-сервисов. `OPENAI_API_KEY` нужен для реального RAG-чата, `ETHERSCAN_API_KEY` — только для загрузки по адресу. Для публичного доступа нужен отдельный HTTPS reverse proxy; см. [эксплуатацию](./docs/operations.md#public-https-entrypoint).
 
-`make deps` скачивает Python-, Slither-, solc-, embedding- и frontend-зависимости на хост. Dockerfile собираются с `network: none` и копируют эти артефакты. Поэтому перенос подготовленных каталогов между другой ОС или архитектурой не поддержан.
-
-## Разработка и проверки
+## Безопасное демо без внешних ключей
 
 ```bash
-make test          # pytest в уже запущенном backend-контейнере
-make lint          # flake8 в backend-контейнере
-cd frontend && npx tsc --noEmit
-make logs
-make down
+make smoke-e2e
 ```
 
-`make test` и `make lint` требуют запущенного Compose-стека (`make up`). CI выполняет flake8, TypeScript typecheck и pytest; frontend unit/E2E tests в репозитории отсутствуют.
+Это ограниченный **mocked API smoke**, не браузерный live E2E: он загружает синтетический Solidity-контракт, проверяет индексацию, findings, advisory Risk Score, чужой tenant-доступ, цитаты и PDF; компилятор, Slither, Qdrant и LLM подменены заглушками. Используются PostgreSQL и Redis, а записи теста удаляются. Платные LLM credentials и настоящие пользовательские данные не нужны. Ручной live-сценарий описан в [smoke/E2E](./docs/smoke-e2e.md).
 
-## Конфигурация
+## Проверки и CI
 
-Настройки backend загружаются из окружения через `backend/app/core/config.py`. Начальная форма — `.env.example`; секретные значения должны оставаться в локальном `.env`. `NEXT_PUBLIC_*` встраиваются во frontend во время сборки. Полный справочник: [docs/environment.md](./docs/environment.md).
+GitHub Actions на push и pull request запускает flake8, TypeScript typecheck, frontend tests для polling и Risk Score notice, а также backend pytest с PostgreSQL/Redis. Backend smoke использует заглушки для внешних сервисов; workflow не собирает release images и не выполняет dependency или image vulnerability scan. Команды разработки: `make test`, `make lint`, `cd frontend && npx tsc --noEmit`.
+
+## Ограничения
+
+- Risk Score A–D — эвристически выведенный индикатор предварительной проверки на synthetic labels. Он не является калиброванной вероятностью, не измеряет вероятность эксплуатации и не заменяет независимый аудит. Sensitivity/specificity на реальных контрактах неизвестны; подробности — в [model card](./docs/risk-score-model-card.md).
+- Результаты не сертифицированы и не доказывают корректность бизнес-логики или поведение контракта в сети; статический анализ может пропускать проблемы и давать ложные срабатывания.
+- Compose production overlay не является готовой production-платформой. В репозитории нет автоматических backup/restore, restore drill, мониторинга/alerting или проверенной процедуры production rollback. Перед реальным deployment выполните [production gate и recovery runbook](./docs/operations.md#production-release-gate).
+- Runtime-ограничения analyzer снижают доступ и ресурсы, но не гарантируют защиту от container escape.
 
 ## Документация
 
-- [Навигация по документации](./docs/README.md)
-- [Архитектура](./docs/architecture.md)
-- [Установка и разработка](./docs/setup.md)
-- [Backend](./docs/backend.md)
-- [Фоновые задачи](./docs/background-jobs.md)
-- [API](./docs/api.md)
-- [Эксплуатация](./docs/operations.md)
-- [Безопасность](./docs/security.md)
-
-## Известные ограничения запуска
-
-- Compose рассчитан на разработку: backend запущен с `--reload`, TLS/reverse proxy не настроены.
-- Миграции выполняются автоматически при старте API; отдельного production-процесса деплоя и rollback в репозитории нет.
-- Backup/restore, мониторинг метрик и production-оркестрация не автоматизированы.
+[Архитектура](./docs/architecture.md) · [Установка](./docs/setup.md) · [Эксплуатация](./docs/operations.md) · [Безопасность](./docs/security.md) · [API](./docs/api.md) · [Документация целиком](./docs/README.md)

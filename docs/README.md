@@ -13,9 +13,11 @@
 | [Backend](./backend.md) | Структура API-сервера, пайплайн индексации |
 | [Frontend](./frontend.md) | Next.js, компоненты, API-клиент |
 | [API](./api.md) | HTTP-эндпоинты и их поведение |
+| [Model card Risk Score](./risk-score-model-card.md) | Синтетические метки, fallback и ограничения advisory-индикатора |
 | [База данных](./database.md) | PostgreSQL, Qdrant, Redis |
 | [Переменные окружения](./environment.md) | `.env`, секреты, конфигурация |
 | [Эксплуатация](./operations.md) | Startup, health, миграции, recovery и инциденты |
+| [Smoke/E2E](./smoke-e2e.md) | Локальный mocked API flow и необязательная ручная live-проверка |
 | [Безопасность](./security.md) | Auth, CSRF/CORS, доверенные границы и ограничения |
 
 ## Быстрый старт

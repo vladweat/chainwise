@@ -19,6 +19,8 @@
 | 007 | `contracts.risk_model`, `features_version` |
 | 008 | Per-user ownership: `UNIQUE(user_id, address, chain_id)`, `user_id NOT NULL`, `ON DELETE CASCADE` |
 | 009 | `contract_artifacts` (source/ast/slither); `contracts.indexing_step` |
+| 010 | durable indexing attempt UUID, heartbeat/claim timestamps and stale-row index |
+| 011 | `contracts.analysis_generation_id` identifies the last completed analysis generation |
 
 ### Таблица `users`
 
@@ -47,6 +49,10 @@ CREATE TABLE contracts (
     is_verified BOOLEAN,
     status VARCHAR(20) DEFAULT 'pending',  -- pending | indexing | loaded | ready | failed
     indexing_step VARCHAR(32),             -- compile | slither | embed | score | done
+    indexing_attempt_id VARCHAR(36),       -- UUID fencing this worker generation
+    analysis_generation_id VARCHAR(36),     -- UUID of the last successfully published generation
+    indexing_heartbeat_at TIMESTAMPTZ,     -- updated between pipeline steps
+    indexing_claimed_at TIMESTAMPTZ,       -- atomic one-delivery claim
     celery_task_id VARCHAR(255),
     risk_score CHAR(1),                    -- A | B | C | D
     risk_model VARCHAR(20),
@@ -73,7 +79,12 @@ CREATE TABLE contract_artifacts (
 
 ### Таблица `analysis_reports`
 
-Кеш ответов LLM. Ключ: `SHA256(question)` + `contract_id`.
+Кеш ответов LLM. Ключ вопроса включает версию cache, `analysis_generation_id` и текст
+вопроса; уникальность строки — `(contract_id, question_hash)`. Redis использует тот же
+хеш в ключе. Поколение публикуется только вместе с переходом контракта в `ready`, поэтому
+переиндексация читает отдельные Redis/DB cache entries и отдельные Qdrant chunks. Старые
+записи не удаляются для корректности и не смешиваются с новым поколением. При миграции
+готовых контрактов PR-06 поколение переносится из `indexing_attempt_id`.
 
 ```sql
 CREATE TABLE analysis_reports (
@@ -130,6 +141,7 @@ CREATE TABLE chat_messages (
 - `users.email` — unique constraint и отдельный non-unique index, созданные migration 001;
 - `users.google_id` — unique constraint;
 - `contracts(user_id, address, chain_id)` — unique constraint migration 008;
+- `contracts(status, indexing_heartbeat_at)` — stale indexing reconciliation migration 010;
 - `analysis_reports(contract_id, question_hash)` — unique constraint;
 - `analysis_reports.question_hash`, `chat_messages.contract_id`, `chat_messages.user_id` — indexes;
 - `contract_artifacts.contract_id` — одновременно PK и FK.
@@ -138,9 +150,9 @@ CREATE TABLE chat_messages (
 
 ### Session и transaction boundaries
 
-`core/deps.get_db` создаёт session на HTTP request и закрывает её без автоматического commit. Services коммитят явно. Создание контракта и публикация Celery-задачи не атомарны: row сначала коммитится, затем task публикуется, после чего отдельным commit сохраняется `celery_task_id`.
+`core/deps.get_db` создаёт session на HTTP request и закрывает её без автоматического commit. Services коммитят явно. Создание контракта и публикация Celery-задачи не атомарны: row с attempt UUID и заранее сгенерированным `celery_task_id` сначала коммитится, затем task публикуется. Публикационная ошибка conditionally переводит только эту попытку в `failed`; если API погиб между DB commit и publish, её найдёт stale reconciler.
 
-Worker коммитит после compile, Slither, Qdrant upsert и финального score. Qdrant не участвует в SQL-транзакции. Подробности — [background-jobs.md](./background-jobs.md).
+Worker атомарно claim-ит попытку и блокирует строку с проверкой UUID перед каждым commit. Qdrant не участвует в SQL-транзакции; его точки разделены по UUID поколения и читаются только по UUID READY-ряда. Подробности — [background-jobs.md](./background-jobs.md).
 
 ---
 
@@ -158,7 +170,7 @@ Worker коммитит после compile, Slither, Qdrant upsert и финал
 | `end_line` | int | Конец чанка |
 | `content` | text | Исходный код |
 
-Перед upsert старые точки того же `contract_id` удаляются.
+Точки разделяются по `contract_id` и `indexing_attempt_id`. Новый generation записывается отдельно; поисковые запросы фильтруют только `analysis_generation_id` контракта в `READY`, поэтому не смешивают поколения во время reindex. Неиспользуемые failed/stale generations автоматически не очищаются.
 
 Dashboard: http://localhost:6333/dashboard
 

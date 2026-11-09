@@ -148,11 +148,14 @@ def load_search_pool(
     contract_id: int,
     question: str,
     *,
+    generation: str | None = None,
     client=None,
     primary_names: set[str] | None = None,
 ) -> list[RetrievedChunk]:
     try:
-        payloads = scroll_contract_chunks(contract_id, client=client)
+        payloads = scroll_contract_chunks(
+            contract_id, generation=generation, client=client
+        )
     except Exception as exc:
         logger.exception("Failed to scroll Qdrant chunks")
         raise RagError(f"Qdrant scroll failed: {exc}") from exc
@@ -175,6 +178,7 @@ def hybrid_search(
     contract_id: int,
     question: str,
     *,
+    generation: str | None = None,
     top_k: int = TOP_K,
     client=None,
     embedder=None,
@@ -186,6 +190,7 @@ def hybrid_search(
         pool = load_search_pool(
             contract_id,
             question,
+            generation=generation,
             client=client,
             primary_names=primary_names,
         )
@@ -218,6 +223,7 @@ def hybrid_search(
             contract_id,
             question,
             limit=max(top_k * 2, VECTOR_CANDIDATES),
+            generation=generation,
             client=client,
             embedder=embedder,
         )
@@ -354,6 +360,7 @@ def retrieve_for_chat(
         pool = load_search_pool(
             contract.id,
             question,
+            generation=getattr(contract, "analysis_generation_id", None),
             client=client,
             primary_names=primary_names,
         )
@@ -362,6 +369,7 @@ def retrieve_for_chat(
             chunks = hybrid_search(
                 contract.id,
                 question,
+                generation=getattr(contract, "analysis_generation_id", None),
                 client=client,
                 embedder=embedder,
                 primary_names=primary_names,
@@ -372,6 +380,7 @@ def retrieve_for_chat(
         chunks = hybrid_search(
             contract.id,
             question,
+            generation=getattr(contract, "analysis_generation_id", None),
             client=client,
             embedder=embedder,
             primary_names=primary_names,

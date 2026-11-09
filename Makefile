@@ -1,4 +1,4 @@
-.PHONY: venv solc embeddings venv-slither deps deps-frontend up up-fast up-frontend down build logs logs-frontend test lint health migrate train-risk
+.PHONY: venv solc embeddings venv-slither deps deps-frontend up up-fast up-frontend down build logs logs-frontend test smoke-e2e lint health migrate train-risk
 
 # Шаг 1 (нужен интернет): скачать зависимости backend + slither + frontend
 deps: venv venv-slither deps-frontend
@@ -51,6 +51,14 @@ test:
 		--cov=app --cov-report=term-missing
 	docker compose exec backend python -m coverage report \
 		--include=app/utils/pragma_parser.py,app/services/risk_scorer.py --fail-under=80
+
+# Mocked API journey; only PostgreSQL and Redis are live dependencies.
+smoke-e2e:
+	docker compose up -d --wait postgres redis
+	docker compose run --build --rm --no-deps \
+		-e ENVIRONMENT=development -e OPENAI_API_KEY= \
+		backend python -m pytest tests/test_smoke_e2e.py -v
+	cd frontend && npm run test:risk-copy
 
 lint:
 	docker compose exec backend python -m flake8 app tests scripts

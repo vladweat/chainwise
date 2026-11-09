@@ -8,7 +8,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chainwise} -d ${POSTGRES_DB:-chainwise_db}"]
       interval: 5s
@@ -18,7 +18,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -28,7 +28,7 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     ports:
-      - "6333:6333"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -40,14 +40,14 @@ services:
       network: none
     command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
-      SOLCX_BINARY_PATH: /app/.solc
       SLITHER_URL: http://slither:8000
       EMBEDDING_MODEL_PATH: /app/.models
       RISK_MODEL_PATH: /app/ml_models/risk_xgb_model.pkl
@@ -63,8 +63,13 @@ services:
     volumes:
       - ./backend:/app
       - ./ml_models:/app/ml_models:ro
+    tmpfs:
+      - /app/.solc:rw,noexec,nosuid,nodev,size=1m,mode=0555
     ports:
-      - "8001:8000"
+      - "127.0.0.1:8001:8000"
+    networks:
+      - default
+      - analyzer
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,14 +84,14 @@ services:
     image: chainwise-backend:latest
     command: python -m celery -A app.celery_config worker -l info
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-chainwise}:${POSTGRES_PASSWORD:-change_this_in_prod}@postgres:5432/${POSTGRES_DB:-chainwise_db}
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       QDRANT_URL: http://qdrant:6333
-      SOLCX_BINARY_PATH: /app/.solc
       SLITHER_URL: http://slither:8000
       EMBEDDING_MODEL_PATH: /app/.models
       RISK_MODEL_PATH: /app/ml_models/risk_xgb_model.pkl
@@ -102,6 +107,11 @@ services:
     volumes:
       - ./backend:/app
       - ./ml_models:/app/ml_models:ro
+    tmpfs:
+      - /app/.solc:rw,noexec,nosuid,nodev,size=1m,mode=0555
+    networks:
+      - default
+      - analyzer
     depends_on:
       postgres:
         condition: service_healthy
@@ -119,8 +129,21 @@ services:
       context: ./slither
       dockerfile: Dockerfile
       network: none
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 2.0
+    mem_limit: 2g
+    pids_limit: 64
     volumes:
       - ./backend/.solc:/opt/solc:ro
+    networks:
+      - analyzer
     environment:
       SOLC_DIR: /opt/solc
     healthcheck:
@@ -142,15 +165,19 @@ services:
       dockerfile: Dockerfile
       network: none
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8001
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8001}
         NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8001
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8001}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     depends_on:
       - backend
+
+networks:
+  analyzer:
+    internal: true
 
 volumes:
   postgres_data:

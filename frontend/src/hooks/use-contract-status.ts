@@ -5,9 +5,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiRequestError, fetchContractStatus } from "@/lib/api";
 import { setLastContractId } from "@/lib/contract-storage";
 import { isTerminalStatus } from "@/lib/contract-status";
+import {
+  getStatusRetryDelay,
+  shouldRetryStatusFailure,
+  STATUS_POLL_INTERVAL_MS,
+} from "@/lib/status-polling.mjs";
 import type { ContractStatusResponse } from "@/types/contract";
-
-const POLL_INTERVAL_MS = 2000;
 
 export function useContractStatus(contractId: number) {
   const [status, setStatus] = useState<ContractStatusResponse | null>(null);
@@ -20,34 +23,49 @@ export function useContractStatus(contractId: number) {
       setStatus(data);
       setLastContractId(id);
       setError(null);
-      return data.status;
+      return { status: data.status, retry: false };
     } catch (err) {
       const message = err instanceof ApiRequestError ? err.message : "Не удалось получить статус";
       setError(message);
-      return "failed";
+      const statusCode = err instanceof ApiRequestError ? err.status : undefined;
+      const retry = shouldRetryStatusFailure(statusCode);
+      if (!retry) setStatus(null);
+      return { status: null, retry };
     }
   }, []);
+
+  const currentStatus = status?.contract_id === contractId ? status : null;
 
   useEffect(() => {
     seenLiveIndexing.current = false;
   }, [contractId]);
 
   useEffect(() => {
-    if (!status) return;
-    if (status.status === "indexing" || status.status === "pending") {
+    if (!currentStatus) return;
+    if (currentStatus.status === "indexing" || currentStatus.status === "pending") {
       seenLiveIndexing.current = true;
     }
-  }, [status]);
+  }, [currentStatus]);
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
 
-    const tick = async () => {
-      const current = await pollStatus(contractId);
+    const tick = async (consecutiveFailures = 0) => {
+      const result = await pollStatus(contractId);
       if (cancelled) return;
-      if (!isTerminalStatus(current)) {
-        timer = setTimeout(tick, POLL_INTERVAL_MS);
+      if (result.status === null) {
+        if (result.retry) {
+          const nextFailureCount = consecutiveFailures + 1;
+          timer = setTimeout(
+            () => void tick(nextFailureCount),
+            getStatusRetryDelay(nextFailureCount),
+          );
+        }
+        return;
+      }
+      if (!isTerminalStatus(result.status)) {
+        timer = setTimeout(() => void tick(), STATUS_POLL_INTERVAL_MS);
       }
     };
 
@@ -58,5 +76,5 @@ export function useContractStatus(contractId: number) {
     };
   }, [contractId, pollStatus]);
 
-  return { status, error, setError, seenLiveIndexing };
+  return { status: currentStatus, error, setError, seenLiveIndexing };
 }

@@ -2,7 +2,9 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SOLC_DIR=/opt/solc
+    SOLC_DIR=/opt/solc \
+    HOME=/tmp \
+    TMPDIR=/tmp
 
 WORKDIR /app
 
@@ -10,6 +12,8 @@ WORKDIR /app
 COPY .venv/lib/python3.12/site-packages/ /usr/local/lib/python3.12/site-packages/
 
 COPY app.py .
+
+USER 10001:10001
 
 EXPOSE 8000
 

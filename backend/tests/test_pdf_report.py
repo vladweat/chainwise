@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from app.models.contract import Contract
 from app.schemas.chat import Citation
@@ -8,6 +9,13 @@ from app.services.solc_compiler import CompileResult
 
 FIXTURE_SOL = Path(__file__).parent / "fixtures" / "Vault.sol"
 CANARY = "UNIQUE_CANARY_xyz_not_in_pdf"
+PDF_TEXT_RUN = re.compile(rb"\(((?:\\.|[^\\)])*)\)\s*Tj")
+
+
+def _pdf_visible_text(pdf: bytes) -> str:
+    runs = PDF_TEXT_RUN.findall(pdf)
+    unescaped = [re.sub(rb"\\([()\\])", rb"\1", run) for run in runs]
+    return " ".join(run.decode("latin-1") for run in unescaped)
 
 
 def _src(content: str, snippet: str, file_id: int = 0) -> str:
@@ -89,6 +97,8 @@ def test_pdf_omits_full_source_and_includes_metadata():
         compiler_version="0.8.24",
         status="ready",
         risk_score="C",
+        risk_model="xgboost",
+        features_version="v1",
         chunk_count=3,
         slither_report={
             "success": True,
@@ -106,18 +116,43 @@ def test_pdf_omits_full_source_and_includes_metadata():
     )
     pdf = build_contract_report_pdf(contract)
     assert pdf.startswith(b"%PDF")
-    text = pdf.decode("latin-1", errors="ignore")
+    text = _pdf_visible_text(pdf)
     assert "Vault" in text
     assert "0x1234567890123456789012345678901234567890" in text
     assert "Ethereum" in text
     assert "Risk score" in text
     assert "C" in text
+    assert (
+        "heuristic-derived advisory pre-screening indicator" in text
+        and "not a likelihood of exploitation" in text
+        and "not a calibrated risk probability" in text
+        and "not a security audit" in text
+    )
+    assert "XGBoost model trained on synthetic heuristic labels / v1" in text
     assert "arbitrary-send-eth" in text
-    assert "Why this score" in text
+    assert "Slither feature summary" in text
     assert "Slither detectors" in text
     assert CANARY not in text
     assert "pragma solidity" not in text
     assert "payable(msg.sender)" not in text
+
+
+def test_pdf_reports_heuristic_fallback_attribution():
+    contract = Contract(
+        id=43,
+        address="0x1234567890123456789012345678901234567890",
+        chain_id=1,
+        status="ready",
+        risk_score="B",
+        risk_model="heuristic",
+        features_version="v1",
+        slither_report={"success": True, "results": {"detectors": []}},
+    )
+
+    text = _pdf_visible_text(build_contract_report_pdf(contract))
+
+    assert "Heuristic fallback / v1" in text
+    assert "XGBoost model trained on synthetic heuristic labels" not in text
 
 
 def test_fixture_sol_chunks_become_citations():

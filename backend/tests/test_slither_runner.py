@@ -1,3 +1,5 @@
+import json as jsonlib
+
 import httpx
 import pytest
 
@@ -24,6 +26,7 @@ def test_run_slither_posts_sources(monkeypatch):
 
     class FakeResponse:
         status_code = 200
+        content = b"{}"
 
         def json(self):
             return SAMPLE_REPORT
@@ -32,9 +35,9 @@ def test_run_slither_posts_sources(monkeypatch):
         def text(self):
             return ""
 
-    def fake_post(url, json=None, timeout=None, **_kwargs):
+    def fake_post(url, content=None, timeout=None, **_kwargs):
         captured["url"] = url
-        captured["json"] = json
+        captured["json"] = jsonlib.loads(content)
         captured["timeout"] = timeout
         return FakeResponse()
 
@@ -82,6 +85,7 @@ def test_run_slither_http_error(monkeypatch):
 def test_run_slither_analysis_failed(monkeypatch):
     class FakeResponse:
         status_code = 200
+        content = b"{}"
         text = ""
 
         def json(self):
@@ -92,13 +96,14 @@ def test_run_slither_analysis_failed(monkeypatch):
         lambda *_args, **_kwargs: FakeResponse(),
     )
 
-    with pytest.raises(SlitherError, match="Compiler error"):
+    with pytest.raises(SlitherError, match="Slither analysis failed"):
         run_slither("pragma solidity ^0.8.24;\ncontract Demo {}", compiler_version="0.8.24")
 
 
 def test_run_slither_normalizes_empty_results(monkeypatch):
     class FakeResponse:
         status_code = 200
+        content = b"{}"
         text = ""
 
         def json(self):

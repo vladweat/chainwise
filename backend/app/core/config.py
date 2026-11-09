@@ -1,7 +1,95 @@
+import ipaddress
+import sys
 from functools import lru_cache
+from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+
+PRODUCTION_ACCESS_TOKEN_MINUTES = 5
+PRODUCTION_ACCESS_TOKEN_MAX_MINUTES = 60
+_PLACEHOLDER_MARKERS = (
+    "change_this",
+    "changeme",
+    "change_me",
+    "replace_me",
+    "example",
+    "password",
+    "secret",
+    "default",
+    "test",
+    "123456",
+    "abcdef",
+    "qwerty",
+    "secret_key",
+    "development",
+    "dev_only",
+)
+
+
+class ProductionConfigurationError(RuntimeError):
+    """A redacted, actionable production configuration failure."""
+
+
+def _is_strong_credential(value: str) -> bool:
+    normalized = value.strip().casefold()
+    normalized_compact = normalized.replace("-", "_")
+    return (
+        value == value.strip()
+        and len(value) >= 32
+        and len(set(value)) >= 12
+        and not any(marker in normalized_compact for marker in _PLACEHOLDER_MARKERS)
+    )
+
+
+def _is_production_https_origin(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        if (
+            parsed.scheme.casefold() != "https"
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        _ = parsed.port  # Reject malformed ports without exposing the input in an error.
+    except ValueError:
+        return False
+
+    hostname = hostname.rstrip(".").casefold()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+    return not (address.is_loopback or address.is_unspecified)
+
+
+def _database_password_is_strong(database_url: str) -> bool:
+    try:
+        url = make_url(database_url)
+        password = url.password
+        return url.get_backend_name() == "postgresql" and password is not None and _is_strong_credential(password)
+    except Exception:
+        return False
+
+
+def validate_production_launch(settings: "Settings", argv: list[str] | None = None) -> None:
+    if settings.environment.strip().casefold() != "production":
+        return
+    arguments = sys.argv if argv is None else argv
+    if any(argument == "--reload" or argument.startswith("--reload=") for argument in arguments):
+        raise ProductionConfigurationError(
+            "Uvicorn --reload is not allowed when ENVIRONMENT=production; "
+            "use docker-compose.production.yml."
+        )
 
 
 class Settings(BaseSettings):
@@ -42,9 +130,49 @@ class Settings(BaseSettings):
         default="http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
         alias="CORS_ORIGINS",
     )
+    next_public_api_url: str = Field(default="http://localhost:8001", alias="NEXT_PUBLIC_API_URL")
 
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @model_validator(mode="after")
+    def validate_production_settings(self) -> "Settings":
+        if self.environment.strip().casefold() != "production":
+            return self
+
+        errors: list[str] = []
+        if not _is_strong_credential(self.secret_key):
+            errors.append(
+                "SECRET_KEY must be at least 32 non-placeholder characters with at least 12 distinct characters; "
+                "generate one with `openssl rand -hex 32`."
+            )
+        if not _database_password_is_strong(self.database_url):
+            errors.append(
+                "DATABASE_URL must be a valid PostgreSQL URL with a non-placeholder password of at least "
+                "32 characters and 12 distinct characters."
+            )
+        if not self.cookie_secure:
+            errors.append("COOKIE_SECURE must be true in production.")
+        if self.cookie_samesite.strip().casefold() not in {"lax", "strict", "none"}:
+            errors.append("COOKIE_SAMESITE must be one of: lax, strict, none.")
+        elif self.cookie_samesite.strip().casefold() == "none" and not self.cookie_secure:
+            errors.append("COOKIE_SAMESITE=none requires COOKIE_SECURE=true.")
+        if not (
+            PRODUCTION_ACCESS_TOKEN_MINUTES
+            <= self.access_token_expire_minutes
+            <= PRODUCTION_ACCESS_TOKEN_MAX_MINUTES
+        ):
+            errors.append("ACCESS_TOKEN_EXPIRE_MINUTES must be between 5 and 60 in production; 15 is recommended.")
+        if not self.cors_origin_list() or any(
+            not _is_production_https_origin(origin) for origin in self.cors_origin_list()
+        ):
+            errors.append("CORS_ORIGINS must contain only HTTPS origins without localhost or loopback hosts.")
+        if not _is_production_https_origin(self.next_public_api_url.strip()):
+            errors.append("NEXT_PUBLIC_API_URL must be an HTTPS origin without a path or localhost/loopback host.")
+
+        if errors:
+            raise ProductionConfigurationError("Invalid production configuration: " + " ".join(errors)) from None
+        return self
 
 
 @lru_cache

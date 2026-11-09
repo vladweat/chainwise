@@ -2,7 +2,6 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    SOLCX_BINARY_PATH=/opt/solc \
     EMBEDDING_MODEL_PATH=/opt/models \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
@@ -19,7 +18,6 @@ COPY alembic ./alembic
 COPY app ./app
 COPY tests ./tests
 COPY ml_models ./ml_models
-COPY .solc /opt/solc
 COPY .models /opt/models
 COPY .libs/ /usr/local/lib/
 

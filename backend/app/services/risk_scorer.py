@@ -1,4 +1,4 @@
-"""Score a Slither JSON report as Risk Score A/B/C/D via XGBoost (heuristic fallback)."""
+"""Produce an experimental advisory A-D pre-screening indicator from Slither features."""
 
 from __future__ import annotations
 
@@ -153,6 +153,15 @@ def score_slither_report_detailed(report: dict | None) -> tuple[str, str]:
         },
     )
     return letter, "heuristic"
+
+
+def risk_model_attribution(source: str | None) -> str:
+    """Describe the scoring source without implying model validation."""
+    if source == "xgboost":
+        return "XGBoost model trained on synthetic heuristic labels"
+    if source == "heuristic":
+        return "Heuristic fallback"
+    return "Unknown source"
 
 
 def risk_reasons(report: dict | None, limit: int = 5) -> list[str]:

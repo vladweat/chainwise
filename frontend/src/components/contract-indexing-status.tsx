@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 
 import { ContractStatusBadge } from "@/components/contract-status-badge";
 import { RiskScoreBadge } from "@/components/risk-score-badge";
+import { RiskScoreNotice } from "@/components/risk-score-notice";
 import {
   CONTRACT_STATUS,
   isCompletedStatus,
@@ -27,7 +28,7 @@ const STEPS: PipelineStep[] = [
   { id: "compile", label: "solc → AST", detail: "Компиляция исходника" },
   { id: "slither", label: "Slither", detail: "Статический анализ" },
   { id: "embed", label: "Qdrant", detail: "Semantic split + эмбеддинги" },
-  { id: "score", label: "Risk Score", detail: "XGBoost A/B/C/D" },
+  { id: "score", label: "Risk Score", detail: "Экспериментальный индикатор A–D" },
 ];
 
 function asProgressStep(step: string | null | undefined): ProgressStepId | null {
@@ -142,6 +143,8 @@ export function ContractIndexingStatus({ status }: { status: ContractStatusRespo
         </div>
       </dl>
 
+      {status.risk_score ? <RiskScoreNotice model={status.risk_model} /> : null}
+
       <ol className="space-y-2">
         {STEPS.map((step, index) => {
           const state = stepState(status.status, status.indexing_step, status.last_error, index);
@@ -166,11 +169,6 @@ export function ContractIndexingStatus({ status }: { status: ContractStatusRespo
         })}
       </ol>
 
-      {status.risk_model === "heuristic" ? (
-        <p className="mt-3 text-xs text-amber-400/80">
-          Оценка эвристическая (нет pickle XGBoost). Буква A–D — не аудит.
-        </p>
-      ) : null}
       {status.status === CONTRACT_STATUS.INDEXING ? (
         <p className="mt-3 text-xs text-amber-400/80">Идёт индексация, обычно это занимает до пары минут.</p>
       ) : null}

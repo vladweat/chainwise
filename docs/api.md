@@ -75,7 +75,7 @@ Google OAuth: нужен `GOOGLE_CLIENT_ID`. Без него — `503`. На `/l
 ### Analyze
 
 - Адрес: `0x` + 40 hex. Сети: `1`, `56`, `11124`.
-- Upload: `.sol` или `.zip`, до 10 MB. `chain_id` по умолчанию `0`; адрес — SHA256 от `chain_id:source`.
+- Upload: `.sol` или `.zip`, до 10 MiB на загруженный файл; полный multipart HTTP body ограничен 10 MiB + 256 KiB. Для ZIP также действуют лимиты: до 100 записей, до 10 MiB на Solidity-файл и до 25 MiB исходников после распаковки суммарно. Превышение лимита размера возвращает `413` (раньше ограничение размера возвращало `400`); остальные ошибки формата возвращают `400`. `chain_id` по умолчанию `0`; адрес — SHA256 от `chain_id:source`.
 - Повторный запрос при `ready`/`loaded` возвращает существующий контракт без новой задачи.
 - Пока идёт индексация — `409`.
 - Rate limit Redis: `429` + `Retry-After` (`RATE_LIMIT_ANALYZE_PER_MINUTE`). Upload считается в тот же лимит.
@@ -107,7 +107,7 @@ Google OAuth: нужен `GOOGLE_CLIENT_ID`. Без него — `503`. На `/l
 
 `status`: `pending` | `indexing` | `loaded` | `ready` | `failed`.
 
-`risk_score`: `A` | `B` | `C` | `D` после успешной индексации; `null` пока идёт пайплайн. `risk_model`: `xgboost` | `heuristic`. `features_version`: сейчас `v1`. Чужой контракт для не-admin — `404`.
+`risk_score`: `A` | `B` | `C` | `D` после успешной индексации; `null` пока идёт пайплайн. Это экспериментальный эвристически сформированный advisory-индикатор для предварительной проверки, а не вероятность эксплуатации, калиброванная вероятность риска или аудит безопасности. `risk_model`: `xgboost` | `heuristic` указывает фактический источник. `features_version`: сейчас `v1`. Чужой контракт для не-admin — `404`. Подробности: [model card Risk Score](./risk-score-model-card.md).
 
 ### Findings
 
@@ -204,6 +204,7 @@ Authorization: Bearer <access_token>
 | 403 | Не admin (`require_admin`) или cookie-мутация без `X-Requested-With` |
 | 404 | Контракт не найден / нет доступа / исходник не верифицирован на explorer |
 | 409 | Email занят / контракт ещё индексируется / чат или PDF до статуса `ready` |
+| 413 | Загруженный `.sol` или `.zip` превышает лимит 10 MiB либо multipart body превышает 10 MiB + 256 KiB |
 | 429 | Rate limit на `/analyze` или `POST /chat` |
 | 503 | Нет `ETHERSCAN_API_KEY` / Google OAuth / сеть explorer / `OPENAI_API_KEY` |
 

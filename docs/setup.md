@@ -4,7 +4,7 @@
 
 | Компонент | Версия |
 |---|---|
-| Docker + Docker Compose | latest |
+| Docker + Docker Compose | Compose v2.24+ |
 | Python (на хосте) | **3.12** |
 | Node.js + npm (на хосте) | **20+** |
 | curl | для smoke test |
@@ -134,10 +134,10 @@ make up
 
 ```bash
 docker compose up -d postgres redis qdrant
-docker compose run --rm -p 8002:8000 slither
+docker compose run --rm -p 127.0.0.1:8002:8000 slither
 ```
 
-Вторая команда остаётся foreground-процессом. Для Slither нужны `backend/.solc` и `slither/.venv`.
+Порты сервисов данных опубликованы только на `127.0.0.1`, поэтому host-native backend ниже подключается через `localhost`; с других машин они недоступны. Вторая команда остаётся foreground-процессом. Для Slither нужны `backend/.solc` и `slither/.venv`.
 
 ### Backend
 

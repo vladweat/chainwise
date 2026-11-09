@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { RISK_SCORE_ADVISORY, riskModelAttribution } from "@/lib/risk-score-copy.mjs";
 
 const SCORE_VARIANT: Record<string, "success" | "default" | "warning" | "destructive"> = {
   A: "success",
@@ -25,7 +26,8 @@ export function RiskScoreBadge({
     <Badge
       variant={SCORE_VARIANT[score] ?? "secondary"}
       className="size-7 shrink-0 justify-center px-0 font-mono text-sm font-semibold"
-      title={model ? `Risk model: ${model}` : undefined}
+      aria-label={`Risk Score ${score}. ${riskModelAttribution(model)}. ${RISK_SCORE_ADVISORY}`}
+      title={`${riskModelAttribution(model)}. ${RISK_SCORE_ADVISORY}`}
     >
       {score}
     </Badge>

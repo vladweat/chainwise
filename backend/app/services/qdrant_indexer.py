@@ -60,16 +60,17 @@ def upsert_code_chunks(
     contract_id: int,
     chunks: list[CodeChunk],
     *,
+    generation: str | None = None,
     client=None,
     embedder=None,
 ) -> int:
-    """Replace existing vectors for `contract_id` with embeddings of `chunks`."""
+    """Replace vectors for one contract generation with embeddings of `chunks`."""
     qdrant = client if client is not None else _get_client()
     encoder = embedder if embedder is not None else _get_embedder()
 
     try:
         _ensure_collection(qdrant)
-        _delete_contract_points(qdrant, contract_id)
+        _delete_contract_points(qdrant, contract_id, generation=generation)
         if not chunks:
             logger.info(
                 "No code chunks to index",
@@ -85,9 +86,9 @@ def upsert_code_chunks(
 
         points = [
             PointStruct(
-                id=_point_id(contract_id, chunk),
+                id=_point_id(contract_id, chunk, generation),
                 vector=vectors[index],
-                payload=chunk.to_payload(contract_id),
+                payload=_chunk_payload(contract_id, chunk, generation),
             )
             for index, chunk in enumerate(chunks)
         ]
@@ -186,16 +187,35 @@ def _ensure_collection(client) -> None:
         message = str(exc).lower()
         if "already" not in message and "conflict" not in message:
             logger.warning("Could not create contract_id payload index: %s", exc)
+    try:
+        client.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="indexing_attempt_id",
+            field_schema="keyword",
+        )
+    except Exception as exc:
+        message = str(exc).lower()
+        if "already" not in message and "conflict" not in message:
+            logger.warning("Could not create indexing_attempt_id payload index: %s", exc)
 
 
-def _delete_contract_points(client, contract_id: int) -> None:
+def _delete_contract_points(
+    client, contract_id: int, *, generation: str | None = None
+) -> None:
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+    conditions = [
+        FieldCondition(key="contract_id", match=MatchValue(value=int(contract_id)))
+    ]
+    if generation is not None:
+        conditions.append(
+            FieldCondition(
+                key="indexing_attempt_id", match=MatchValue(value=generation)
+            )
+        )
     client.delete(
         collection_name=COLLECTION_NAME,
-        points_selector=Filter(
-            must=[FieldCondition(key="contract_id", match=MatchValue(value=int(contract_id)))]
-        ),
+        points_selector=Filter(must=conditions),
         wait=True,
     )
 
@@ -215,17 +235,19 @@ def delete_contract_chunks(contract_id: int, *, client=None) -> None:
         )
 
 
-def scroll_contract_chunks(contract_id: int, *, client=None, batch_size: int = 100) -> list[dict]:
+def scroll_contract_chunks(
+    contract_id: int,
+    *,
+    generation: str | None = None,
+    client=None,
+    batch_size: int = 100,
+) -> list[dict]:
     """Return all Qdrant payloads for `contract_id` (no vectors)."""
     qdrant = client if client is not None else _get_client()
     if not qdrant.collection_exists(COLLECTION_NAME):
         return []
 
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-    filt = Filter(
-        must=[FieldCondition(key="contract_id", match=MatchValue(value=int(contract_id)))]
-    )
+    filt = _contract_filter(contract_id, generation)
     payloads: list[dict] = []
     offset = None
     while True:
@@ -250,6 +272,7 @@ def search_similar_chunks(
     contract_id: int,
     query: str,
     *,
+    generation: str | None = None,
     limit: int = 16,
     client=None,
     embedder=None,
@@ -261,7 +284,7 @@ def search_similar_chunks(
 
     encoder = embedder if embedder is not None else _get_embedder()
     vector = encode_texts(encoder, [query])[0]
-    points = _query_similar(qdrant, vector, contract_id, limit)
+    points = _query_similar(qdrant, vector, contract_id, limit, generation)
     results: list[tuple[dict, float]] = []
     for point in points or []:
         payload = _payload_of(point)
@@ -292,12 +315,25 @@ def encode_texts(embedder, texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def _query_similar(client, vector: list[float], contract_id: int, limit: int):
+def _contract_filter(contract_id: int, generation: str | None):
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-    filt = Filter(
-        must=[FieldCondition(key="contract_id", match=MatchValue(value=int(contract_id)))]
-    )
+    conditions = [
+        FieldCondition(key="contract_id", match=MatchValue(value=int(contract_id)))
+    ]
+    if generation is not None:
+        conditions.append(
+            FieldCondition(
+                key="indexing_attempt_id", match=MatchValue(value=generation)
+            )
+        )
+    return Filter(must=conditions)
+
+
+def _query_similar(
+    client, vector: list[float], contract_id: int, limit: int, generation: str | None
+):
+    filt = _contract_filter(contract_id, generation)
     if hasattr(client, "query_points"):
         try:
             result = client.query_points(
@@ -327,9 +363,22 @@ def _payload_of(record) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _point_id(contract_id: int, chunk: CodeChunk) -> str:
+def _chunk_payload(
+    contract_id: int, chunk: CodeChunk, generation: str | None
+) -> dict:
+    payload = chunk.to_payload(contract_id)
+    if generation is not None:
+        payload["indexing_attempt_id"] = generation
+    return payload
+
+
+def _point_id(
+    contract_id: int, chunk: CodeChunk, generation: str | None = None
+) -> str:
     key = (
         f"{contract_id}:{chunk.file_path}:{chunk.function_name}:"
         f"{chunk.start_line}:{chunk.end_line}:{chunk.kind}"
     )
+    if generation is not None:
+        key = f"{key}:{generation}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))

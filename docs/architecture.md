@@ -8,12 +8,12 @@ flowchart TB
     FE[Frontend<br/>Next.js 15 :3001]
     BE[Backend<br/>FastAPI :8001]
     CW[Celery Worker]
-    SL[Slither sidecar :8000]
+    SL[Analyzer sidecar :8000]
     PG[(PostgreSQL 15<br/>+ pgvector)]
     RD[(Redis 7)]
     QD[(Qdrant)]
     ES[Etherscan / BscScan / Abscan]
-    OA[OpenAI-compatible API]
+    OA[OpenAI GPT-4o-mini]
 
     User --> FE
     FE --> BE
@@ -35,7 +35,7 @@ OpenAI-compatible API вызывается из backend при RAG-чате (`OP
 
 ## Архитектурный стиль и зависимости
 
-ChainWise — контейнеризованный модульный монолит с отдельными процессами API, worker, frontend и Slither sidecar. Это не набор независимо развёртываемых бизнес-микросервисов и не формальная Clean/Hexagonal Architecture.
+ChainWise — контейнеризованный модульный монолит с отдельными процессами API, worker, frontend и analyzer sidecar. Это не набор независимо развёртываемых бизнес-микросервисов и не формальная Clean/Hexagonal Architecture.
 
 Типичное направление backend-зависимостей:
 
@@ -66,20 +66,20 @@ core dependencies/config/database
 | | Alembic | 1.14+ | Миграции |
 | AI / эмбеддинги | FastEmbed | `all-MiniLM-L6-v2` ONNX | 384d векторы |
 | | Qdrant | latest | Векторный поиск |
-| | OpenAI-compatible API | GPT-4o-mini по умолчанию | Генерация текста |
-| Анализ | Slither | sidecar HTTP | Статический анализ JSON |
-| | solc | 0.8.24+ через `py-solc-x` | Компиляция Solidity |
-| | XGBoost | 2.x | Risk Score A/B/C/D |
+| | OpenAI | GPT-4o-mini / 4o | Генерация (фаза 5) |
+| Анализ | solc + Slither | analyzer sidecar HTTP | AST + статический анализ JSON |
+| | solc | allowlisted preinstalled versions, в analyzer | Компиляция Solidity |
+| | XGBoost | 2.x | Experimental advisory pre-screening indicator A/B/C/D (synthetic labels) |
 | | fpdf2 | 2.8+ | PDF-отчёт без исходника |
 | Фон | Celery | 5.x | Асинхронная индексация |
-| | Redis | 7 | Брокер + lock индексации + кеш LLM |
+| | Redis | 7 | Celery broker, locks, refresh sessions, limits и кеш LLM |
 | БД | PostgreSQL | 15 | Пользователи, контракты |
 | | pgvector | 15 | Зарезервировано |
 | Infra | Docker Compose | latest | Оркестрация |
 | | GitHub Actions | `ci.yml` | flake8 + tsc + pytest + coverage на push |
 | | Sentry | опционально | ошибки API / Celery / solc / Slither / LLM |
 
-Backend-зависимости устанавливаются из `requirements.txt` через pip. Эмбеддинги вычисляются FastEmbed на ONNX, solc управляется через `py-solc-x`, а Slither запускается в отдельном контейнере. Sentry включается опционально через `SENTRY_DSN`; `/health` проверяет PostgreSQL, Redis, Qdrant и Slither.
+Отклонения от исходного ТЗ: pip (`requirements.txt`) вместо Poetry; FastEmbed вместо Sentence-Transformers/PyTorch; `py-solc-x` используется только при подготовке preinstalled solc; solc и Slither запускаются отдельным analyzer-контейнером, не backend. Nginx / Prometheus не подключены. Sentry — опциональный `SENTRY_DSN`. `/health` уже проверяет postgres, redis, qdrant, analyzer.
 
 ## Поток данных
 
@@ -90,11 +90,11 @@ address/file → FastAPI (JWT) → Redis lock
   → Etherscan или parse .sol/.zip
   → PostgreSQL (status=indexing)
   → Celery task indexing.load_contract
-      → solc compile → AST
-      → Slither sidecar POST /analyze → slither_report
+      → analyzer POST /compile → AST
+      → analyzer POST /analyze → slither_report
       → split by functions/modifiers
       → FastEmbed → Qdrant code_chunks
-      → XGBoost risk_score A/B/C/D
+      → experimental advisory indicator A/B/C/D (XGBoost / heuristic)
       → status=ready (или failed + last_error)
   → GET /contracts/{id}/status (polling UI)
   → GET /contracts/{id}/report (PDF, без исходника)
@@ -105,7 +105,7 @@ address/file → FastAPI (JWT) → Redis lock
 ```
 question → hybrid search (BM25 + vector)
   → prompt with chunks
-  → OpenAI-compatible API (JSON или SSE)
+  → OpenAI GPT-4o-mini (JSON или SSE)
   → answer + citations
   → cache (Redis + analysis_reports)
   → chat_messages (лента UI, не в LLM)
@@ -114,10 +114,20 @@ question → hybrid search (BM25 + vector)
 ### Транзакции и согласованность
 
 - FastAPI dependency `get_db` открывает SQLAlchemy session на запрос и только закрывает её; commit/rollback выполняют service-функции явно.
-- Регистрация, создание контракта, присвоение `celery_task_id`, стадии индексации, кеш и чат используют отдельные commits.
-- Worker коммитит AST, Slither report и `chunk_count` после каждой стадии. Финальный commit происходит через `set_indexing_step`.
-- PostgreSQL и Qdrant не имеют общей транзакции. Upsert/delete в Qdrant может успешно завершиться до DB failure либо cleanup может не выполниться.
-- LLM cache двухуровневый: Redis TTL 86400 секунд и долговечная таблица `analysis_reports`.
+- Регистрация, создание контракта с attempt UUID, стадии индексации, кеш и чат используют отдельные commits.
+- Worker делает atomic claim и проверяет attempt UUID под блокировкой строки перед записями AST, Slither report, `chunk_count` и `ready`.
+- PostgreSQL и Qdrant не имеют общей транзакции. Qdrant points разделены по UUID поколения и поиск использует только поколение READY-ряда; failed/stale поколения остаются невидимыми.
+- LLM cache использует Redis TTL 86400 секунд и таблицу `analysis_reports`; ключ обоих слоёв включает успешное поколение анализа.
+
+## Классы состояния и восстановление
+
+| Хранилище | Что содержит | Роль при восстановлении |
+|---|---|---|
+| PostgreSQL | Пользователи, исходники и результаты анализа, поколения, отчёты и история чата | Авторитетное долговечное состояние приложения; включать в обязательный backup |
+| Qdrant `code_chunks` | Векторы и payload частей исходника по поколениям | Производное, но нужное для текущего RAG поиска состояние. Полной автоматической переиндексации в репозитории нет, поэтому до проверенного rebuild его нужно восстанавливать из snapshot |
+| Redis | Celery queue/results, indexing locks, refresh-session keys, rate/quota counters и LLM response cache | Ответы в LLM cache можно потерять и пересоздать. Очередь, locks, sessions и counters — эфемерное операционное состояние: после потери Redis отложенные задачи могут потеряться, пользователям понадобится повторный вход, а reconciliation нужно выполнить по runbook |
+
+Согласованная точка восстановления должна содержать PostgreSQL и Qdrant snapshot, сделанные при остановленной записи. Redis не является источником истины для контрактов или RAG-ответов. Практические backup и restore-verification шаги приведены в [operations](./operations.md#backup-и-recovery).
 
 Подробности delivery semantics: [background-jobs.md](./background-jobs.md).
 
@@ -127,12 +137,12 @@ question → hybrid search (BM25 + vector)
 |---|---|---|
 | Explorer APIs | HTTPS, Etherscan-compatible | FastAPI analyze request |
 | OpenAI-compatible API | HTTPS Chat Completions / stream | FastAPI chat request |
-| Slither sidecar | HTTP JSON | Celery worker |
+| Analyzer sidecar | HTTP JSON (`/compile`, `/analyze`) | Celery worker |
 | Qdrant | HTTP client | worker и FastAPI RAG |
 | PostgreSQL | SQLAlchemy/psycopg2 | FastAPI и worker |
 | Redis | Redis protocol | FastAPI, Celery, worker |
 
-Timeouts и retry неоднородны: LLM timeout 60 секунд, Slither subprocess 90 секунд; Celery task retry явно не настроен.
+Timeouts и retry неоднородны: LLM timeout 60 секунд, solc subprocess 45 секунд, Slither subprocess 90 секунд; Celery task retry явно не настроен.
 
 ## Offline-сборка Docker
 
@@ -148,19 +158,21 @@ Timeouts и retry неоднородны: LLM timeout 60 секунд, Slither s
 
 ## Порты
 
+Все опубликованные host-порты привязаны к loopback (`127.0.0.1`); сервисы также общаются по Compose DNS внутри стандартной сети. Analyzer присоединён только к internal runtime-сети `analyzer`, общей с backend и worker. Sidecar работает под UID `10001`, с `no-new-privileges`, без capabilities, с read-only root, ограниченным tmpfs и CPU/RAM/PID limits; он не получает DB URL или application credentials. Скомпилировать можно только версии из `ALLOWED_SOLC_VERSIONS`, предустановленные в read-only `/opt/solc`. Эти настройки ограничивают поверхность доступа и ресурсы, но не гарантируют защиту от container escape или уязвимости ядра/runtime. Параметр Dockerfile `build.network: none` отключает сеть на этапе сборки и не задаёт runtime-изоляцию.
+
 | Сервис | Host | Container |
 |---|---|---|
-| Frontend | 3001 | 3000 |
-| Backend | 8001 | 8000 |
-| PostgreSQL | 5432 | 5432 |
-| Redis | 6379 | 6379 |
-| Qdrant | 6333 | 6333 |
+| Frontend | 127.0.0.1:3001 | 3000 |
+| Backend | 127.0.0.1:8001 | 8000 |
+| PostgreSQL | 127.0.0.1:5432 | 5432 |
+| Redis | 127.0.0.1:6379 | 6379 |
+| Qdrant | 127.0.0.1:6333 | 6333 |
 | Slither | — | 8000 (внутренняя сеть Compose) |
 
 ## Ключевые trade-offs
 
 - Offline build уменьшает зависимость сборки от сети, но требует host-артефакты той же платформы.
-- Вынос Slither ограничивает subprocess отдельным контейнером, но Compose не задаёт resource/sandbox limits.
+- Вынос solc и Slither в analyzer ограничивает subprocess отдельным контейнером с runtime limits; Docker isolation не устраняет риски container escape.
 - Qdrant даёт специализированный vector search, но добавляет второе долговечное хранилище без transactional coupling.
 - Автомиграция при startup упрощает локальный запуск, но не подходит для конкурентного production rollout.
 - Redis объединяет broker, locks, sessions, limits и cache; это упрощает stack и расширяет blast radius сбоя.

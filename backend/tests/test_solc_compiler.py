@@ -1,5 +1,6 @@
 import pytest
 
+from app.services import solc_compiler
 from app.services.solc_compiler import (
     SolcCompileError,
     compile_to_ast,
@@ -57,6 +58,31 @@ def test_split_concatenated_files():
 def test_split_rejects_parent_path():
     with pytest.raises(SolcCompileError, match="Unsafe source path"):
         split_source_files("// File: ../../etc/passwd\npragma solidity ^0.8.24;")
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "C:\\Windows\\system.ini", "\\\\server\\share\\x.sol"])
+def test_split_rejects_absolute_and_windows_paths(path):
+    with pytest.raises(SolcCompileError, match="Unsafe source path"):
+        split_source_files(f"// File: {path}\npragma solidity ^0.8.24;")
+
+
+def test_split_normalizes_dot_segments_and_rejects_duplicates():
+    normalized = split_source_files("// File: contracts/./Owned.sol\ncontract Owned {}")
+    assert set(normalized) == {"contracts/Owned.sol"}
+
+    source = (
+        "// File: contracts/Owned.sol\ncontract Owned {}\n"
+        "// File: contracts/./Owned.sol\ncontract Owned {}"
+    )
+    with pytest.raises(SolcCompileError, match="Duplicate source path"):
+        split_source_files(source)
+
+
+def test_split_rejects_excessive_file_markers_before_mapping_them():
+    source = "\n".join(f"// File: File{index}.sol\ncontract C{index} {{}}" for index in range(101))
+
+    with pytest.raises(SolcCompileError, match="at most 100 source files"):
+        split_source_files(source)
 
 
 def test_split_empty_source():
@@ -124,5 +150,68 @@ def test_select_installed_version_fallback():
 
 @pytest.mark.skipif(not is_solc_available(), reason="solc 0.8.24 is not installed")
 def test_compile_invalid_source():
-    with pytest.raises(SolcCompileError, match="solc 0.8.24 failed"):
+    with pytest.raises(SolcCompileError, match="Solidity compilation failed"):
         compile_to_ast(INVALID_SOL, compiler_version="0.8.24")
+
+
+def test_compile_to_ast_uses_analyzer_and_preserves_compile_result(monkeypatch):
+    payload = {
+        "solc_version": "0.8.24",
+        "sources": {
+            "Demo.sol": {
+                "id": 0,
+                "ast": {"nodeType": "SourceUnit", "nodes": []},
+            }
+        },
+    }
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def iter_bytes(self):
+            import json
+
+            yield json.dumps(payload).encode("utf-8")
+
+    class FakeStream:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_stream(method, url, **kwargs):
+        captured.update(method=method, url=url, kwargs=kwargs)
+        return FakeStream()
+
+    monkeypatch.setattr(solc_compiler.httpx, "stream", fake_stream)
+
+    result = compile_to_ast(SIMPLE_SOL, compiler_version="0.8.24", filename="Demo.sol")
+
+    assert result.to_dict() == payload
+    assert captured["method"] == "POST"
+    assert captured["url"].endswith("/compile")
+    assert captured["kwargs"]["headers"]["content-type"] == "application/json"
+
+
+def test_compile_to_ast_returns_sanitized_analyzer_error(monkeypatch):
+    class FakeResponse:
+        status_code = 422
+
+        def iter_bytes(self):
+            yield b'{"detail":"Solidity compilation failed (ParserError, 2314) at Demo.sol:3"}'
+
+    class FakeStream:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(solc_compiler.httpx, "stream", lambda *_args, **_kwargs: FakeStream())
+
+    with pytest.raises(SolcCompileError, match="ParserError, 2314") as exc_info:
+        compile_to_ast(INVALID_SOL, compiler_version="0.8.24")
+
+    assert "contract Broken" not in str(exc_info.value)

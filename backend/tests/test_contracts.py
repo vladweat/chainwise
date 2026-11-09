@@ -264,6 +264,24 @@ def test_upload_sol_success():
     assert status_response.json()["chunk_count"] == 1
 
 
+def test_upload_over_size_limit_returns_413():
+    token = _register_user()
+    response = client.post(
+        "/api/v1/contracts/analyze/upload",
+        headers=_auth_headers(token),
+        files={
+            "file": (
+                "Large.sol",
+                b"pragma solidity ^0.8.24;\n" + b" " * (10 * 1024 * 1024),
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "File exceeds 10 MiB limit"
+
+
 def test_upload_zip_success():
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:

@@ -11,6 +11,7 @@ import { ContractFindingsPanel } from "@/components/contract-findings-panel";
 import { ContractIndexingStatus } from "@/components/contract-indexing-status";
 import { ContractStatusBadge } from "@/components/contract-status-badge";
 import { RiskScoreBadge } from "@/components/risk-score-badge";
+import { RiskScoreNotice } from "@/components/risk-score-notice";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/card";
 import { useContractActions } from "@/hooks/use-contract-actions";
@@ -202,10 +203,10 @@ export function ContractWorkspace({ contractId }: { contractId: number }) {
           Этот адрес уже разобран. Открыта существующая карточка.
         </p>
       ) : null}
-      {status.risk_model === "heuristic" ? (
-        <p className="border-b border-slate-800 px-3 py-1.5 text-xs text-amber-400/90 sm:px-6">
-          Risk Score посчитан эвристикой (нет XGBoost-модели или Slither дал слабый сигнал). Это не аудит.
-        </p>
+      {status.risk_score ? (
+        <div className="border-b border-slate-800 px-3 py-1.5 sm:px-6">
+          <RiskScoreNotice model={status.risk_model} />
+        </div>
       ) : null}
       {pdfError ? (
         <p className="border-b border-slate-800 px-3 py-1.5 text-xs text-red-400 sm:px-6">{pdfError}</p>

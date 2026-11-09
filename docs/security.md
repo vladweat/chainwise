@@ -11,12 +11,12 @@ flowchart LR
     API -->|tokens, counters, broker| R[(Redis)]
     API -->|source fetch| E[Explorer APIs]
     API -->|prompt + chunks| L[OpenAI-compatible API]
-    W[Celery worker] --> S[Slither sidecar]
+    W[Celery worker] --> S[Analyzer sidecar: solc + Slither]
     W --> Q[(Qdrant)]
     S -->|subprocess| SL[Slither + solc]
 ```
 
-Исходный код контракта недоверенный. Он передаётся в solc и Slither sidecar; sidecar запускает Slither subprocess с timeout 90 секунд во временном каталоге. Репозиторий не задаёт для контейнера отдельные `read_only`, seccomp, CPU или memory limits.
+Исходный код контракта недоверенный. Celery worker передаёт его analyzer sidecar по HTTP; только sidecar запускает solc и Slither. Запросы и ответы ограничены по размеру, у дочерних процессов есть таймаут и лимиты stdout/stderr. Compose запускает analyzer non-root с read-only root filesystem, ограниченным `/tmp` tmpfs, `no-new-privileges`, без capabilities и с CPU/RAM/PID limits. Sidecar находится в internal-сети, не получает DB URL или прикладных credentials и может запускать только preinstalled версии из `ALLOWED_SOLC_VERSIONS`.
 
 ## Аутентификация
 
@@ -27,7 +27,7 @@ flowchart LR
 - При refresh старый Redis-ключ удаляется и выдаётся новая пара токенов.
 - Google flow проверяет ID token библиотекой `google-auth` и audience `GOOGLE_CLIENT_ID`.
 
-`SECRET_KEY` имеет небезопасное development-значение по умолчанию. Код не запрещает запуск production с этим значением; оператор обязан заменить его. Настраиваемый `ALGORITHM` передаётся в encode/decode, поэтому допустимый алгоритм следует фиксировать на `HS256`, если иной вариант не был отдельно проверен.
+`SECRET_KEY` имеет небезопасное development-значение по умолчанию. При `ENVIRONMENT=production` Settings отвергают placeholder/слабый ключ до запуска приложения. Настраиваемый `ALGORITHM` передаётся в encode/decode, поэтому допустимый алгоритм следует фиксировать на `HS256`, если иной вариант не был отдельно проверен.
 
 ## Cookies, CSRF и CORS
 
@@ -45,11 +45,11 @@ Cookies всегда `HttpOnly`, имеют `Path=/`; `Secure` и `SameSite` з�
 
 ## Загрузка и обработка исходника
 
-- API ограничивает входной архив или файл 10 MiB до распаковки.
+- До разбора multipart внешний ASGI middleware ограничивает полный HTTP body upload-запроса 10 MiB + 256 KiB, включая chunked запросы без `Content-Length`; при превышении возвращается `413`, не позволяя Starlette бесконечно spool-ить крупные тела во временные файлы. Маршрут затем читает `UploadFile` блоками по 64 KiB и ограничивает сам `.sol` или `.zip` до 10 MiB.
 - Принимаются только `.sol` и `.zip`, текст декодируется как UTF-8.
-- ZIP читается в памяти. Ограничения на суммарный распакованный размер, число entries и compression ratio отсутствуют.
-- Имена файлов не извлекаются на диск в backend. В Slither sidecar `_safe_path` отклоняет `..` и выход из временного каталога.
-- Версия solc должна соответствовать `N.N.N`, а бинарник уже должен существовать в `/opt/solc`.
+- ZIP не извлекается на диск. Число записей ограничено 100, размер одного `.sol` — 10 MiB, суммарный фактически прочитанный распакованный Solidity-код — 25 MiB. Чтение записей идёт блоками с проверкой фактического объёма; проверяются нормализованные пути, дубликаты, UTF-8, тип и метод сжатия. Абсолютные пути, выход за каталог и зашифрованные записи запрещены.
+- В analyzer sidecar `_safe_path` отклоняет `..` и выход из временного каталога.
+- Версия solc должна соответствовать `N.N.N`, входить в `ALLOWED_SOLC_VERSIONS` и быть заранее установлена в `/opt/solc`; скачивания при обработке запроса нет.
 
 ## Секреты и чувствительные данные
 
@@ -65,10 +65,10 @@ Rate limits и дневные квоты используют Redis fixed counte
 
 ## Подтверждённые ограничения
 
-- TLS, reverse proxy и security headers не настроены.
+- TLS, reverse proxy и security headers не входят в Compose stack; публичный HTTPS-вход описан в [operations](./operations.md#public-https-entrypoint).
 - Нет reset/verify email, MFA, password policy кроме длины 8–128.
-- Нет принудительной проверки безопасных production settings при старте.
-- Compose публикует PostgreSQL, Redis и Qdrant на всех host interfaces по стандартным портам.
-- Контейнерные sandbox limits и vulnerability scanning в CI отсутствуют.
-- ZIP decompression bomb protection отсутствует.
+- Production Settings fail fast при небезопасном ключе/пароле, cookies, origins или access-token lifetime; production Compose overlay снимает `--reload`.
+- Compose публикует frontend, backend и data services только на `127.0.0.1`; не меняйте bindings на `0.0.0.0` для публичного доступа.
+- Docker runtime limits уменьшают доступ и ресурсный ущерб, но не гарантируют защиту от container escape или уязвимостей ядра/runtime. Отдельного seccomp-профиля и vulnerability scanning в CI нет.
+- Production deployment заблокирован до выполнения [release gate](./operations.md#production-release-gate): текущий overlay наследует bind mounts, использует mutable image tags и не отделяет миграции от API startup. CI не формирует SBOM и не сканирует зависимости или images.
 

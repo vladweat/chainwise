@@ -7,6 +7,7 @@ from app.services.risk_scorer import (
     heuristic_numeric,
     probability_to_letter,
     risk_reasons,
+    risk_model_attribution,
     score_slither_report,
     score_slither_report_detailed,
 )
@@ -112,6 +113,12 @@ def test_score_detailed_reports_source(monkeypatch):
     letter, source = score_slither_report_detailed(DANGEROUS_REPORT)
     assert letter == "D"
     assert source == "heuristic"
+
+
+def test_model_attribution_distinguishes_xgboost_from_heuristic():
+    assert risk_model_attribution("xgboost") == "XGBoost model trained on synthetic heuristic labels"
+    assert risk_model_attribution("heuristic") == "Heuristic fallback"
+    assert risk_model_attribution(None) == "Unknown source"
 
 
 def test_heuristic_high_risk_threshold():

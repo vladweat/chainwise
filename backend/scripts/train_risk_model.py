@@ -132,7 +132,10 @@ def main() -> int:
 
     preds = booster.predict(dtest)
     accuracy = float(np.mean((preds >= 0.5) == labels[split:]))
-    print(f"Holdout accuracy vs heuristic labels: {accuracy:.3f}")
+    print(
+        "Synthetic holdout accuracy vs heuristic labels "
+        f"(not real-world validation): {accuracy:.3f}"
+    )
 
     bundle = {"booster": booster, "feature_names": list(FEATURE_NAMES), "version": 1}
     for path in OUTPUT_PATHS:

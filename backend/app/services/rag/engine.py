@@ -6,17 +6,43 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.contract import Contract
 from app.models.user import User
+from app.models.contract_status import require_chat_ready
 from app.services.rag.cache import load_cached_answer, persist_chat_turn, save_cached_answer
 from app.services.rag.llm_client import call_openai, stream_openai
 from app.services.rag.prompting import NO_CONTEXT_ANSWER, build_messages
 from app.services.rag.retrieval import citations_from_chunks, retrieve_for_chat
 from app.services.rag.types import ChatResult, LLMUsage, OpenAINotConfiguredError
+
+
+def _refresh_ready_contract(db: Session, contract: Contract) -> Contract:
+    current = (
+        db.query(Contract)
+        .filter(Contract.id == contract.id)
+        .populate_existing()
+        .first()
+    )
+    if current is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Contract not found",
+        )
+    # A delayed SSE generator may hold an ORM identity from before reindexing.
+    # Refresh its artifact relation along with the status/generation columns.
+    db.expire(current, ["artifact"])
+    require_chat_ready(current)
+    return current
+
+
+def _cache_generation_kwargs(contract: Contract) -> dict[str, str]:
+    generation_id = getattr(contract, "analysis_generation_id", None)
+    return {"generation_id": generation_id} if generation_id is not None else {}
 
 
 def answer_question(
@@ -28,7 +54,9 @@ def answer_question(
     retriever=None,
     completer=None,
 ) -> ChatResult:
-    cached = load_cached_answer(db, contract.id, question)
+    contract = _refresh_ready_contract(db, contract)
+    cache_generation = _cache_generation_kwargs(contract)
+    cached = load_cached_answer(db, contract.id, question, **cache_generation)
     if cached is not None:
         persist_chat_turn(
             db,
@@ -48,6 +76,7 @@ def answer_question(
             user_id=user.id,
             question=question,
             result=result,
+            **cache_generation,
         )
         persist_chat_turn(
             db,
@@ -74,6 +103,7 @@ def answer_question(
         user_id=user.id,
         question=question,
         result=result,
+        **cache_generation,
     )
     persist_chat_turn(
         db,
@@ -95,7 +125,9 @@ def iter_sse_events(
 ) -> Iterator[str]:
     db = SessionLocal()
     try:
-        cached = load_cached_answer(db, contract.id, question)
+        contract = _refresh_ready_contract(db, contract)
+        cache_generation = _cache_generation_kwargs(contract)
+        cached = load_cached_answer(db, contract.id, question, **cache_generation)
         if cached is not None:
             persist_chat_turn(
                 db,
@@ -124,6 +156,7 @@ def iter_sse_events(
                 user_id=user.id,
                 question=question,
                 result=result,
+                **cache_generation,
             )
             persist_chat_turn(
                 db,
@@ -160,6 +193,7 @@ def iter_sse_events(
             user_id=user.id,
             question=question,
             result=result,
+            **cache_generation,
         )
         persist_chat_turn(
             db,

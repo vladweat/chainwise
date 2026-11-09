@@ -1,6 +1,8 @@
 """Contract analyze / status / chat orchestration."""
 
 import logging
+import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -38,7 +40,8 @@ from app.services.etherscan_loader import (
     fetch_contract_source,
 )
 from app.services.solc_compiler import SolcCompileError, split_source_files
-from app.services.upload_handler import UploadError, parse_upload
+from app.services.upload_handler import UploadError, UploadTooLargeError, parse_upload
+from app.services.indexing_lifecycle import mark_attempt_failed
 from app.utils.address import is_supported_chain, is_valid_address, normalize_address
 from app.utils.quota import (
     enforce_analyze_quota,
@@ -119,6 +122,17 @@ def _reset_for_reindex(contract: Contract) -> None:
     contract.ast = None
     contract.chunk_count = None
     contract.last_error = None
+    contract.indexing_claimed_at = None
+
+
+def _start_indexing_attempt(contract: Contract) -> tuple[str, str]:
+    attempt_id = str(uuid.uuid4())
+    task_id = str(uuid.uuid4())
+    contract.indexing_attempt_id = attempt_id
+    contract.indexing_heartbeat_at = datetime.now(UTC)
+    contract.indexing_claimed_at = None
+    contract.celery_task_id = task_id
+    return attempt_id, task_id
 
 
 def _enqueue_indexing(
@@ -146,12 +160,15 @@ def _enqueue_indexing(
     if existing is None:
         enforce_max_contracts(db, user.id)
 
-    if not acquire_indexing_lock(user.id, chain_id, address):
+    lock_owner_token = acquire_indexing_lock(user.id, chain_id, address)
+    if lock_owner_token is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Contract is already being indexed",
         )
 
+    attempt_id = None
+    task_id = None
     try:
         if existing is not None:
             contract = existing
@@ -173,22 +190,48 @@ def _enqueue_indexing(
             )
             db.add(contract)
 
+        attempt_id, task_id = _start_indexing_attempt(contract)
+
         db.commit()
         db.refresh(contract)
 
-        task = load_contract_task.delay(contract.id)
-        contract.celery_task_id = task.id
-        db.commit()
+        try:
+            load_contract_task.apply_async(
+                task_id=task_id,
+                args=(contract.id, lock_owner_token, user.id, chain_id, address, attempt_id),
+                argsrepr=(
+                    f"({contract.id}, '<redacted-owner-token>', {user.id}, {chain_id}, "
+                    "'<redacted-address>', '<attempt-id>')"
+                ),
+            )
+        except Exception:
+            try:
+                mark_attempt_failed(
+                    db,
+                    contract.id,
+                    attempt_id,
+                    "Task dispatch failed; retry analysis after broker recovery.",
+                )
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                logger.exception(
+                    "Could not persist enqueue failure for contract %s", contract.id
+                )
+            raise
 
         return AnalyzeResponse(
-            task_id=task.id,
+            task_id=task_id,
             contract_id=contract.id,
             status=ContractStatus.INDEXING.value,
         )
-    except HTTPException:
-        raise
     except Exception:
-        release_indexing_lock(user.id, chain_id, address)
+        try:
+            release_indexing_lock(user.id, chain_id, address, lock_owner_token)
+        except Exception:
+            logger.exception("Failed to release owned indexing lock after enqueue failure")
         raise
 
 
@@ -256,6 +299,8 @@ def analyze_by_upload(
 ) -> AnalyzeResponse:
     try:
         uploaded = parse_upload(filename, content, chain_id=chain_id)
+    except UploadTooLargeError as exc:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=str(exc)) from exc
     except UploadError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

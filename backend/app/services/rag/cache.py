@@ -20,20 +20,30 @@ from app.utils.redis_lock import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-CACHE_VERSION = "v6"
+CACHE_VERSION = "v7"
 LLM_CACHE_TTL_SECONDS = 86400
 
 
-def question_hash(question: str) -> str:
-    return hashlib.sha256(f"{CACHE_VERSION}\n{question}".encode("utf-8")).hexdigest()
+def question_hash(question: str, generation_id: str | None = None) -> str:
+    if generation_id is None:
+        value = f"{CACHE_VERSION}\n{question}"
+    else:
+        value = f"{CACHE_VERSION}\n{generation_id}\n{question}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def cache_key(contract_id: int, qhash: str) -> str:
     return f"llm_cache:{CACHE_VERSION}:{contract_id}:{qhash}"
 
 
-def load_cached_answer(db: Session, contract_id: int, question: str) -> ChatResult | None:
-    qhash = question_hash(question)
+def load_cached_answer(
+    db: Session,
+    contract_id: int,
+    question: str,
+    *,
+    generation_id: str | None = None,
+) -> ChatResult | None:
+    qhash = question_hash(question, generation_id)
     key = cache_key(contract_id, qhash)
     redis_value = _redis_get(key)
     if redis_value is not None:
@@ -94,8 +104,9 @@ def save_cached_answer(
     user_id: int | None,
     question: str,
     result: ChatResult,
+    generation_id: str | None = None,
 ) -> None:
-    qhash = question_hash(question)
+    qhash = question_hash(question, generation_id)
     if citations_are_interface_stubs(result.citations):
         _redis_delete(cache_key(contract_id, qhash))
         return

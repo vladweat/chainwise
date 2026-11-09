@@ -25,6 +25,7 @@ class AnalysisReport(Base):
     user_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Versioned digest of generation ID + question; keeps reports isolated by analysis.
     question_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     llm_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
     citations: Mapped[list | None] = mapped_column(JSONB, nullable=True)

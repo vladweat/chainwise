@@ -7,11 +7,16 @@ from datetime import datetime, timezone
 from fpdf import FPDF
 
 from app.models.contract import Contract
-from app.services.risk_scorer import risk_reasons
+from app.services.risk_scorer import risk_model_attribution, risk_reasons
 
 CHAIN_LABELS = {1: "Ethereum", 56: "BSC", 11124: "Abstract", 0: "Upload"}
 MAX_FINDINGS = 40
 MAX_DESCRIPTION = 220
+RISK_SCORE_ADVISORY_NOTE = (
+    "Experimental A-D score: a heuristic-derived advisory pre-screening indicator. "
+    "It is not a likelihood of exploitation, not a calibrated risk probability, "
+    "and not a security audit."
+)
 
 
 def extract_slither_findings(report: dict | None) -> list[dict]:
@@ -63,6 +68,8 @@ def build_contract_report_pdf(contract: Contract) -> bytes:
     )
     pdf.set_text_color(0, 0, 0)
     pdf.ln(4)
+    _write_line(pdf, RISK_SCORE_ADVISORY_NOTE, size=9)
+    pdf.ln(3)
 
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     created = _format_dt(contract.created_at)
@@ -80,7 +87,14 @@ def build_contract_report_pdf(contract: Contract) -> bytes:
         ("Report generated", generated),
     ]
     if contract.risk_model:
-        rows.insert(-2, ("Risk model", f"{contract.risk_model} / {contract.features_version or '-'}"))
+        rows.insert(
+            -2,
+            (
+                "Scoring source",
+                f"{risk_model_attribution(contract.risk_model)} / "
+                f"{contract.features_version or '-'}",
+            ),
+        )
     label_width = 42
     for label, value in rows:
         pdf.set_x(pdf.l_margin)
@@ -91,7 +105,7 @@ def build_contract_report_pdf(contract: Contract) -> bytes:
 
     reasons = risk_reasons(contract.slither_report)
     pdf.ln(3)
-    _write_line(pdf, "Why this score", bold=True, size=12, height=8)
+    _write_line(pdf, "Slither feature summary", bold=True, size=12, height=8)
     for reason in reasons:
         _write_line(pdf, f"- {reason}", size=9)
 

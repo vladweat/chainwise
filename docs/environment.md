@@ -40,11 +40,12 @@ REFRESH_TOKEN_EXPIRE_MINUTES=10080
 COOKIE_SAMESITE=lax
 COOKIE_SECURE=false
 CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001
+NEXT_PUBLIC_API_URL=http://localhost:8001
 ```
 
 `OPENAI_API_KEY` нужен для RAG-чата (`POST /contracts/{id}/chat`). Без ключа чат отдаёт `503`, если нет попадания в кеш и в Qdrant есть чанки.
 
-Стандартная конфигурация использует `https://api.openai.com/v1` и модель `gpt-4o-mini`. Клиент также распознаёт ключи KodikRouter и выбирает для них встроенные endpoint и модель. Для других OpenAI-compatible сервисов задайте `OPENAI_BASE_URL` и `OPENAI_MODEL`; эти параметры переопределяют автоматический выбор.
+Стандартная конфигурация использует `https://api.openai.com/v1` и модель `gpt-4o-mini`. Для других OpenAI-compatible сервисов задайте `OPENAI_BASE_URL` и `OPENAI_MODEL`.
 
 Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с). Дневные квоты: `quota:*` + `QUOTA_MAX_CONTRACTS`. JWT для SPA — HttpOnly cookies `cw_access` / `cw_refresh`; Bearer по-прежнему принимается (Swagger, тесты). Cookie-мутации требуют `X-Requested-With`.
 
@@ -66,7 +67,9 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | `GOOGLE_CLIENT_ID` | Google login | пусто | API, frontend build |
 | `SENTRY_DSN` | только Sentry | пусто | API, worker |
 
-Пустые optional keys отключают соответствующую интеграцию. Production validation, запрещающая placeholder secrets или некорректное сочетание настроек, отсутствует.
+Пустые optional keys отключают соответствующую интеграцию. При `ENVIRONMENT=production` Pydantic Settings проверяет конфигурацию до создания API/worker: сильные неплейсхолдерные `SECRET_KEY` и пароль в PostgreSQL URL, `COOKIE_SECURE=true`, допустимый `COOKIE_SAMESITE`, HTTPS CORS/API origins без localhost и access-token lifetime 5–60 минут. Ошибки redacted и содержат имена параметров и ожидаемые значения без самих секретов. Production Compose overlay также убирает `--reload` и требует настройки production переменных.
+
+Политика access token: 5–60 минут в production, рекомендуется 15 минут. Development default `1440` минут не меняется, а в production должен быть задан явно. TTL refresh-cookie (по умолчанию 7 дней) этой политикой не меняется.
 
 ## Sentry
 
@@ -87,7 +90,7 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | Переменная | Пример | Описание |
 |---|---|---|
 | `POSTGRES_USER` | `chainwise` | Пользователь PostgreSQL |
-| `POSTGRES_PASSWORD` | `change_this_in_prod` | Пароль PostgreSQL |
+| `POSTGRES_PASSWORD` | development placeholder | Production требует 32+ неплейсхолдерных символов и не менее 12 различных |
 | `POSTGRES_DB` | `chainwise_db` | Имя БД |
 | `DATABASE_URL` | `postgresql+psycopg2://...@postgres:5432/...` | SQLAlchemy |
 
@@ -112,7 +115,6 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | Переменная | Пример | Описание |
 |---|---|---|
 | `SLITHER_URL` | `http://slither:8000` | Sidecar Slither |
-| `SOLCX_BINARY_PATH` | `/app/.solc` | Каталог solc (Compose) |
 | `RISK_MODEL_PATH` | `/app/ml_models/risk_xgb_model.pkl` | XGBoost pickle |
 
 ### Внешние API
@@ -132,11 +134,11 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 |---|---|---|
 | `SECRET_KEY` | `openssl rand -hex 32` | JWT signing key |
 | `ALGORITHM` | `HS256` | JWT algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | TTL access-токена (24ч) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | Development default: 24ч; production: 5–60 минут, рекомендуется 15 |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | `10080` | TTL refresh-cookie (7 дней) |
 | `COOKIE_SAMESITE` | `lax` | `lax` для same-site; `none` + `COOKIE_SECURE=true` для cross-site SPA |
-| `COOKIE_SECURE` | `false` | `true` в HTTPS / при `SameSite=None` |
-| `CORS_ORIGINS` | `http://localhost:3001,...` | CSV allowlist для CORS |
+| `COOKIE_SECURE` | `false` | Development default; production требует `true` |
+| `CORS_ORIGINS` | `http://localhost:3001,...` | Development allowlist; production требует HTTPS origins без localhost/loopback |
 | `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Лимит `/analyze` и upload |
 | `RATE_LIMIT_CHAT_PER_MINUTE` | `30` | Лимит `POST /chat` |
 | `QUOTA_MAX_CONTRACTS` | `20` | Макс. контрактов на пользователя (`0` = off) |
@@ -154,12 +156,12 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 
 | Переменная | Пример | Описание |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | URL backend для браузера |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | URL backend для браузера; production требует HTTPS origin без localhost/loopback |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | тот же, что `GOOGLE_CLIENT_ID` | Кнопка Google на `/login` |
 
-> `NEXT_PUBLIC_*` вшивается при `npm run build`. Compose передаёт `GOOGLE_CLIENT_ID` как `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. После изменения — `make up-frontend`. Для `npm run dev` задайте переменную в окружении.
+> `NEXT_PUBLIC_*` вшивается при `npm run build`. Compose передаёт `GOOGLE_CLIENT_ID` как `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. `NEXT_PUBLIC_API_URL` по умолчанию указывает на локальный backend; production требует HTTPS origin без localhost. Для HTTPS reverse proxy задайте адрес до сборки frontend через production Compose overlay. Для `npm run dev` задайте переменную в окружении.
 
-`POSTGRES_*` читает container image PostgreSQL и Compose interpolation; они не являются полями backend `Settings`. `SOLCX_BINARY_PATH`, proxy variables и offline flags читаются библиотеками/сервисными модулями или задаются Compose напрямую.
+`POSTGRES_*` читает container image PostgreSQL и Compose interpolation; они не являются полями backend `Settings`. Proxy variables и offline flags читаются библиотеками/сервисными модулями или задаются Compose напрямую. Компиляторы solc доступны только analyzer sidecar через read-only mount.
 
 В Compose также: `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `LD_LIBRARY_PATH=/usr/local/lib`.
 
@@ -170,7 +172,7 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | `DATABASE_URL` | `@postgres:5432` | `@localhost:5432` |
 | `REDIS_URL` | `redis://redis:6379/0` | `redis://localhost:6379/0` |
 | `QDRANT_URL` | `http://qdrant:6333` | `http://localhost:6333` |
-| `SLITHER_URL` | `http://slither:8000` | сервис без host-порта; нужен свой проброс |
+| `SLITHER_URL` | `http://slither:8000` | `http://127.0.0.1:8000`; нужен отдельно доступный analyzer, Compose-sidecar не публикуется на host |
 
 ## Генерация секретов
 

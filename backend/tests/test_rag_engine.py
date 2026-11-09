@@ -1,6 +1,11 @@
 from decimal import Decimal
+import hashlib
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
+from fastapi import HTTPException
 
 from app.services.rag_engine import (
     LLMUsage,
@@ -49,8 +54,151 @@ def test_reciprocal_rank_fusion_prefers_overlap():
 def test_question_hash_is_sha256_hex():
     digest = question_hash("Is transfer safe?")
     assert len(digest) == 64
+    assert digest == hashlib.sha256(b"v7\nIs transfer safe?").hexdigest()
     assert digest == question_hash("Is transfer safe?")
     assert digest != question_hash("is transfer safe?")
+
+
+def test_question_hash_is_scoped_to_successful_analysis_generation():
+    assert question_hash("same question", "attempt-one") != question_hash(
+        "same question", "attempt-two"
+    )
+
+
+def test_answer_cache_lookup_uses_contract_generation(monkeypatch):
+    from app.services.rag import engine
+    from app.services.rag.types import ChatResult
+
+    generation_ids = []
+    cached = ChatResult(answer="cached", citations=[], cached=True)
+
+    def load(_db, _contract_id, _question, *, generation_id):
+        generation_ids.append(generation_id)
+        return cached
+
+    monkeypatch.setattr(engine, "load_cached_answer", load)
+    monkeypatch.setattr(engine, "persist_chat_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(engine, "_refresh_ready_contract", lambda _db, value: value)
+    contract = SimpleNamespace(
+        id=71, status="ready", analysis_generation_id="generation-current"
+    )
+    user = SimpleNamespace(id=7)
+
+    result = engine.answer_question(object(), contract, user, "same question")
+
+    assert result is cached
+    assert generation_ids == ["generation-current"]
+
+
+@pytest.mark.parametrize("current_status", ["ready", "failed"])
+def test_answer_uses_fresh_contract_status_and_generation(monkeypatch, current_status):
+    from app.models.contract import Contract
+    from app.services.rag import engine
+    from app.services.rag.types import ChatResult
+
+    current_contract = SimpleNamespace(
+        id=71,
+        status=current_status,
+        analysis_generation_id="generation-new",
+    )
+
+    class FakeQuery:
+        def filter(self, *_args):
+            return self
+
+        def populate_existing(self):
+            return self
+
+        def first(self):
+            return current_contract
+
+    class FakeSession:
+        def query(self, model):
+            assert model is Contract
+            return FakeQuery()
+
+        def expire(self, _instance, _attributes):
+            pass
+
+    generations = []
+
+    def load(_db, _contract_id, _question, *, generation_id):
+        generations.append(generation_id)
+        return ChatResult(answer="cached", citations=[], cached=True)
+
+    monkeypatch.setattr(engine, "load_cached_answer", load)
+    monkeypatch.setattr(engine, "persist_chat_turn", lambda *_args, **_kwargs: None)
+    stale_contract = SimpleNamespace(
+        id=71,
+        status="ready",
+        analysis_generation_id="generation-old",
+    )
+    user = SimpleNamespace(id=7)
+
+    if current_status == "failed":
+        with pytest.raises(HTTPException) as error:
+            engine.answer_question(FakeSession(), stale_contract, user, "same question")
+        assert error.value.status_code == 409
+        assert generations == []
+    else:
+        result = engine.answer_question(
+            FakeSession(), stale_contract, user, "same question"
+        )
+        assert result.answer == "cached"
+        assert generations == ["generation-new"]
+
+
+def test_stream_cache_lookup_uses_contract_generation(monkeypatch):
+    from app.services.rag import engine
+    from app.services.rag.types import ChatResult
+
+    generation_ids = []
+    cached = ChatResult(answer="cached", citations=[], cached=True)
+
+    class FakeSession:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(engine, "SessionLocal", FakeSession)
+    monkeypatch.setattr(
+        engine,
+        "load_cached_answer",
+        lambda _db, _contract_id, _question, *, generation_id: (
+            generation_ids.append(generation_id) or cached
+        ),
+    )
+    monkeypatch.setattr(engine, "persist_chat_turn", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(engine, "_refresh_ready_contract", lambda _db, value: value)
+    contract = SimpleNamespace(
+        id=71, status="ready", analysis_generation_id="generation-current"
+    )
+    user = SimpleNamespace(id=7)
+
+    events = list(engine.iter_sse_events(contract, user, "same question"))
+
+    assert events[-1] == "data: [DONE]\n\n"
+    assert generation_ids == ["generation-current"]
+
+
+def test_saved_analysis_report_hash_includes_generation(monkeypatch):
+    from app.services.rag.cache import save_cached_answer
+    from app.services.rag.types import ChatResult
+
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    monkeypatch.setattr("app.services.rag.cache._redis_set", lambda *_args: None)
+
+    save_cached_answer(
+        db,
+        contract_id=71,
+        user_id=7,
+        question="same question",
+        result=ChatResult(answer="answer", citations=[], cached=False),
+        generation_id="generation-current",
+    )
+
+    report = db.add.call_args.args[0]
+    assert report.question_hash == question_hash("same question", "generation-current")
 
 
 def test_chunk_from_payload_and_estimate_cost():
@@ -146,6 +294,51 @@ def test_hybrid_search_returns_top_chunks():
     )
     assert len(results) == 1
     assert results[0].function_name == "Demo.mint"
+
+
+def test_retrieval_reads_only_the_ready_analysis_generation(monkeypatch):
+    from app.services.rag.retrieval import retrieve_for_chat
+
+    payload = {
+        "contract_id": 71,
+        "indexing_attempt_id": "generation-current",
+        "file_path": "Demo.sol",
+        "function_name": "Demo.ping",
+        "start_line": 3,
+        "end_line": 5,
+        "content": "function ping() external { return; }",
+        "kind": "function",
+    }
+    seen_generations = []
+
+    def scroll(_contract_id, *, generation, **_kwargs):
+        seen_generations.append(generation)
+        return [payload]
+
+    def search(_contract_id, _question, *, generation, **_kwargs):
+        seen_generations.append(generation)
+        return [(payload, 0.9)]
+
+    monkeypatch.setattr("app.services.rag.retrieval.scroll_contract_chunks", scroll)
+    monkeypatch.setattr("app.services.rag.retrieval.search_similar_chunks", search)
+    contract = SimpleNamespace(
+        id=71,
+        status="ready",
+        analysis_generation_id="generation-current",
+        name="Demo",
+        source_code="x" * 25_000,
+        ast={
+            "nodeType": "SourceUnit",
+            "nodes": [],
+        },
+        slither_report=None,
+        risk_score=None,
+    )
+
+    chunks = retrieve_for_chat(contract, "how does ping work?")
+
+    assert [chunk.function_name for chunk in chunks] == ["Demo.ping"]
+    assert seen_generations == ["generation-current", "generation-current"]
 
 
 def test_tokenize_keeps_cyrillic_words():

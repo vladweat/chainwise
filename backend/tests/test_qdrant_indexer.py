@@ -6,6 +6,7 @@ from app.services.qdrant_indexer import (
     COLLECTION_NAME,
     QdrantIndexError,
     VECTOR_SIZE,
+    scroll_contract_chunks,
     upsert_code_chunks,
 )
 from app.services.semantic_splitter import CodeChunk
@@ -56,7 +57,7 @@ class FakeQdrant:
         self.points = [
             point
             for point in self.points
-            if point.payload.get("contract_id") != _filter_contract_id(points_selector)
+            if not _matches_filter(point.payload, points_selector)
         ]
 
     def upsert(self, collection_name: str, points=None, wait=None):
@@ -71,6 +72,14 @@ def _filter_contract_id(selector) -> int | None:
         return None
     match = getattr(must[0], "match", None)
     return getattr(match, "value", None)
+
+
+def _matches_filter(payload: dict, selector) -> bool:
+    conditions = getattr(selector, "must", None) or []
+    return all(
+        payload.get(condition.key) == condition.match.value
+        for condition in conditions
+    )
 
 
 def test_upsert_creates_collection_and_points():
@@ -109,6 +118,38 @@ def test_upsert_replaces_previous_points_for_contract():
 
     assert len(client.deleted) == 2
     assert [point.payload["function_name"] for point in client.points] == ["Demo.new"]
+
+
+def test_attempt_generations_replace_only_their_own_points():
+    client = FakeQdrant()
+    first = [_chunk("Demo.old")]
+    second = [_chunk("Demo.new", start=20, end=22)]
+
+    upsert_code_chunks(1, first, generation="attempt-old", client=client, embedder=FakeEmbedder())
+    upsert_code_chunks(1, second, generation="attempt-new", client=client, embedder=FakeEmbedder())
+
+    assert {
+        (point.payload["indexing_attempt_id"], point.payload["function_name"])
+        for point in client.points
+    } == {("attempt-old", "Demo.old"), ("attempt-new", "Demo.new")}
+    assert len({point.id for point in client.points}) == 2
+
+
+def test_scroll_limits_results_to_active_generation():
+    class ScrollQdrant(FakeQdrant):
+        def scroll(self, *, scroll_filter, **_kwargs):
+            self.scroll_filter = scroll_filter
+            return [], None
+
+    client = ScrollQdrant()
+    client.collections.add(COLLECTION_NAME)
+    scroll_contract_chunks(1, generation="attempt-current", client=client)
+
+    assert [condition.key for condition in client.scroll_filter.must] == [
+        "contract_id",
+        "indexing_attempt_id",
+    ]
+    assert client.scroll_filter.must[1].match.value == "attempt-current"
 
 
 def test_upsert_empty_chunks_only_deletes():

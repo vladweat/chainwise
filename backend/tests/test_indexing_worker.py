@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.indexing_worker import run_indexing
 from app.services.solc_compiler import CompileResult, SolcCompileError
 from app.services.slither_runner import SlitherError
@@ -91,6 +93,109 @@ def test_run_indexing_saves_ast(monkeypatch):
     assert captured == {"contract_id": 1, "chunk_count": 1}
     assert saved["filename"] == "Demo.sol"
     assert saved["committed"] is True
+
+
+def test_run_indexing_promotes_attempt_to_successful_generation(monkeypatch):
+    from app.models.contract import Contract
+
+    monkeypatch.setattr(
+        "app.services.indexing_worker.compile_to_ast",
+        lambda *_args, **_kwargs: CompileResult(
+            solc_version="0.8.24",
+            sources={"Demo.sol": {"id": 0, "ast": {"nodeType": "SourceUnit", "nodes": []}}},
+        ),
+    )
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(
+        "app.services.indexing_worker.score_slither_report_detailed",
+        lambda _report: ("A", "heuristic"),
+    )
+
+    contract = Contract(
+        id=71,
+        user_id=7,
+        address="0x" + "a" * 40,
+        chain_id=1,
+        name="Demo",
+        source_code="pragma solidity ^0.8.24; contract Demo {}",
+        compiler_version="0.8.24",
+        status="indexing",
+        indexing_attempt_id="attempt-new",
+        analysis_generation_id="generation-old",
+    )
+
+    class FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def with_for_update(self, **_kwargs):
+            return self
+
+        def populate_existing(self):
+            return self
+
+        def first(self):
+            return contract
+
+    class FakeSession:
+        def query(self, *_args):
+            return FakeQuery()
+
+        def commit(self):
+            pass
+
+    result = run_indexing(
+        FakeSession(), contract, celery_task_id="task-71", attempt_id="attempt-new"
+    )
+
+    assert result["status"] == "ready"
+    assert contract.analysis_generation_id == "attempt-new"
+    assert contract.status == "ready"
+
+
+def test_failed_attempt_does_not_replace_successful_generation(monkeypatch):
+    from app.models.contract import Contract
+
+    monkeypatch.setattr(
+        "app.services.indexing_worker.compile_to_ast",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SolcCompileError("syntax error")),
+    )
+    contract = Contract(
+        id=72,
+        user_id=7,
+        address="0x" + "b" * 40,
+        chain_id=1,
+        source_code="contract Broken {",
+        status="indexing",
+        indexing_attempt_id="attempt-failed",
+        analysis_generation_id="generation-old",
+    )
+
+    class FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def with_for_update(self, **_kwargs):
+            return self
+
+        def populate_existing(self):
+            return self
+
+        def first(self):
+            return contract
+
+    class FakeSession:
+        def query(self, *_args):
+            return FakeQuery()
+
+        def commit(self):
+            pass
+
+    with pytest.raises(SolcCompileError, match="syntax error"):
+        run_indexing(FakeSession(), contract, attempt_id="attempt-failed")
+
+    assert contract.analysis_generation_id == "generation-old"
+    assert contract.status == "indexing"
 
 
 def test_run_indexing_reports_function_chunks(monkeypatch):
