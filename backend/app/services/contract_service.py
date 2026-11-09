@@ -325,12 +325,13 @@ def get_contract_status(db: Session, contract_id: int, user: User) -> ContractSt
 
 def delete_contract(db: Session, contract_id: int, user: User) -> None:
     contract = get_contract_for_user(db, contract_id, user)
-    try:
-        delete_contract_chunks(contract.id)
-    except Exception as exc:
-        logger.warning("Qdrant cleanup failed for contract %s: %s", contract.id, exc)
+    contract_id = contract.id
     db.delete(contract)
     db.commit()
+    try:
+        delete_contract_chunks(contract_id)
+    except Exception as exc:
+        logger.warning("Qdrant cleanup failed for contract %s: %s", contract_id, exc)
     logger.info("Deleted contract %s for user %s", contract_id, user.id)
 
 

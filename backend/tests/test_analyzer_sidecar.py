@@ -1,8 +1,12 @@
 import importlib.util
+import json
 import sys
+import threading
 import textwrap
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -264,3 +268,60 @@ def test_analyzer_rejects_requests_over_concurrency_limit(analyzer):
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "5"
+
+
+def test_three_concurrent_analyzer_requests_get_retryable_capacity_response(
+    analyzer, monkeypatch
+):
+    module, _client = analyzer
+    monkeypatch.setattr(module, "available_solc_versions", lambda: ["0.8.24"])
+    two_started = threading.Event()
+    release_compilers = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+
+    def hold_bounded_process(_argv, *, input_bytes, **_kwargs):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            if call_count == module.MAX_CONCURRENT_ANALYZER_REQUESTS:
+                two_started.set()
+        assert release_compilers.wait(timeout=5)
+        request = json.loads(input_bytes)
+        return SimpleNamespace(
+            stdout=json.dumps(
+                {
+                    "sources": {
+                        name: {
+                            "id": index,
+                            "ast": {"nodeType": "SourceUnit", "nodes": []},
+                        }
+                        for index, name in enumerate(request["sources"])
+                    },
+                    "errors": [],
+                }
+            ).encode(),
+            stderr=b"",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(module, "_run_bounded_process", hold_bounded_process)
+
+    def compile_in_client_thread():
+        with TestClient(module.app) as client:
+            return _compile(client)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        active = [pool.submit(compile_in_client_thread) for _ in range(2)]
+        try:
+            assert two_started.wait(timeout=3), "both analyzer slots did not become active"
+            with TestClient(module.app) as client:
+                overloaded = _compile(client)
+        finally:
+            release_compilers.set()
+        completed = [future.result(timeout=5) for future in active]
+
+    assert [response.status_code for response in completed] == [200, 200]
+    assert overloaded.status_code == 503
+    assert overloaded.headers["retry-after"] == "5"
+    assert overloaded.json()["detail"] == "Analyzer is at capacity; retry later"

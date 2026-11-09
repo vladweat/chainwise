@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.database import SessionLocal
 from app.services.indexing_lifecycle import reconcile_stale_indexing
+from app.services.qdrant_reconciler import reconcile_qdrant_generations
 
 
 def main() -> int:
@@ -35,6 +36,7 @@ def main() -> int:
             stale_before=stale_before,
             dry_run=not args.apply,
         )
+        qdrant = reconcile_qdrant_generations(db, dry_run=not args.apply)
     finally:
         db.close()
 
@@ -44,6 +46,7 @@ def main() -> int:
                 "mode": "apply" if args.apply else "dry-run",
                 "stale_contract_ids": contract_ids,
                 "count": len(contract_ids),
+                "qdrant": qdrant,
             }
         )
     )

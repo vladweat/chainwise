@@ -92,7 +92,18 @@ Celery `task_time_limit` и `task_soft_time_limit` не заданы, поэто
 
 ## Детерминированная сверка stale строк
 
-Compose stack не запускает Celery Beat. Для небольшого single-host deployment используется явная команда, которую можно запускать по расписанию хоста (например, каждые 15 минут). Порог по умолчанию — 3600 секунд с последнего heartbeat; первый запуск сначала показывает только список ID:
+Compose stack не запускает Celery Beat. Для небольшого single-host deployment в `deploy/systemd/` есть user timer: он запускает существующую команду `reconcile_indexing` каждые 15 минут, начиная через 5 минут после старта user manager. Порог — 3600 секунд с последнего heartbeat. Перед установкой замените `%h/chainwise` в service-файле на абсолютный путь к Compose checkout, если он лежит в другом месте. Устанавливайте timer от пользователя, который может выполнять `docker compose`:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/chainwise-indexing-reconcile.{service,timer} ~/.config/systemd/user/
+# При необходимости поправьте WorkingDirectory в ~/.config/systemd/user/chainwise-indexing-reconcile.service
+systemctl --user daemon-reload
+systemctl --user enable --now chainwise-indexing-reconcile.timer
+systemctl --user list-timers chainwise-indexing-reconcile.timer
+```
+
+Для запуска без активной login-сессии включите linger для этого пользователя. Проверяйте исполнение через `journalctl --user -u chainwise-indexing-reconcile.service`. Сначала можно запустить dry-run вручную; он выводит stale contract IDs и кандидаты Qdrant, ничего не изменяя:
 
 ```bash
 docker compose exec -T backend python -m app.scripts.reconcile_indexing
@@ -100,7 +111,7 @@ docker compose exec -T backend python -m app.scripts.reconcile_indexing --apply
 docker compose exec -T backend python -m app.scripts.reconcile_indexing --apply --stale-after-seconds 3600
 ```
 
-`--apply` блокирует найденные строки, ещё раз проверяет `status=indexing` и завершает их как `failed` с безопасным сообщением. Текущая попытка после этого fenced от worker-записей. Команду можно безопасно запускать повторно; она не публикует задачи и не повторяет pipeline.
+`--apply` блокирует найденные строки, ещё раз проверяет `status=indexing` и завершает их как `failed` с безопасным сообщением; затем удаляет Qdrant points удалённых контрактов и неактивных поколений. Текущие успешное и выполняющееся поколения сохраняются. Повторный запуск безопасен и идемпотентен; reconciliation не публикует задачи и не повторяет pipeline. При остановленном backend unit завершится ошибкой и будет запущен снова по следующему таймеру.
 
 ## Операционная диагностика
 

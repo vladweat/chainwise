@@ -281,7 +281,7 @@ docker compose exec -T backend python -m app.scripts.reconcile_indexing
 docker compose exec -T backend python -m app.scripts.reconcile_indexing --apply
 ```
 
-По умолчанию stale считается попытка без heartbeat старше 3600 секунд; legacy-строки без heartbeat проверяются по `created_at`. Команду можно запускать с host cron каждые 15 минут. Она не делает автоматический retry: после `failed` пользователь повторно отправляет analyze. Не меняйте `status` напрямую. Детали состояний и восстановления приведены в [матрице фоновой индексации](./background-jobs.md#матрица-отказов-и-восстановление).
+По умолчанию stale считается попытка без heartbeat старше 3600 секунд; legacy-строки без heartbeat проверяются по `created_at`. Для автозапуска установите [systemd user timer](./background-jobs.md#детерминированная-сверка-stale-строк). Он не делает автоматический retry: после `failed` пользователь повторно отправляет analyze. Не меняйте `status` напрямую. Детали состояний и восстановления приведены в [матрице фоновой индексации](./background-jobs.md#матрица-отказов-и-восстановление).
 
 ### `failed` на `compile` или `slither`
 
@@ -293,7 +293,7 @@ docker compose exec -T backend python -m app.scripts.reconcile_indexing --apply
 
 ### Удаление оставило точки Qdrant
 
-Удаление в Qdrant выполняется best effort: ошибка логируется, после чего PostgreSQL row всё равно удаляется. Нужного для автоматической очистки orphan points reconciliation job нет.
+Удаление сначала фиксируется в PostgreSQL, затем Qdrant points удаляются best effort. Если Qdrant недоступен, API всё равно удалит контракт; следующий запуск `reconcile_indexing --apply` найдёт orphan points и удалит их. Та же сверка очищает поколения, которые не совпадают с успешным `analysis_generation_id` или выполняющимся `indexing_attempt_id`.
 
 ## Не реализовано
 

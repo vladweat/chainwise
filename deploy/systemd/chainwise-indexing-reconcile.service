@@ -1,0 +1,7 @@
+[Unit]
+Description=Reconcile stale ChainWise indexing and Qdrant generations
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/chainwise
+ExecStart=/usr/bin/docker compose exec -T backend python -m app.scripts.reconcile_indexing --apply --stale-after-seconds 3600
