@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.services import solc_compiler
@@ -193,6 +195,86 @@ def test_compile_to_ast_uses_analyzer_and_preserves_compile_result(monkeypatch):
     assert captured["method"] == "POST"
     assert captured["url"].endswith("/compile")
     assert captured["kwargs"]["headers"]["content-type"] == "application/json"
+
+
+def test_compile_to_ast_retries_analyzer_capacity(monkeypatch):
+    payload = {
+        "solc_version": "0.8.24",
+        "sources": {"Demo.sol": {"id": 0, "ast": {"nodeType": "SourceUnit", "nodes": []}}},
+    }
+    calls = []
+    sleeps = []
+
+    class FakeResponse:
+        def __init__(self, status_code, body, headers=None):
+            self.status_code = status_code
+            self.body = body
+            self.headers = headers or {}
+
+        def iter_bytes(self):
+            yield self.body
+
+    class FakeStream:
+        def __init__(self, response):
+            self.response = response
+
+        def __enter__(self):
+            return self.response
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_stream(*_args, **_kwargs):
+        calls.append(True)
+        response = (
+            FakeResponse(
+                503,
+                b'{"detail":"Analyzer is at capacity; retry later"}',
+                {"Retry-After": "5"},
+            )
+            if len(calls) == 1
+            else FakeResponse(200, json.dumps(payload).encode())
+        )
+        return FakeStream(response)
+
+    monkeypatch.setattr(solc_compiler.httpx, "stream", fake_stream)
+    monkeypatch.setattr("app.services.analyzer_retry.time.sleep", sleeps.append)
+
+    result = compile_to_ast(SIMPLE_SOL, compiler_version="0.8.24", filename="Demo.sol")
+
+    assert result.to_dict() == payload
+    assert len(calls) == 2
+    assert sleeps == [5.0]
+
+
+def test_compile_to_ast_does_not_retry_other_503_responses(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 503
+        headers = {}
+
+        def iter_bytes(self):
+            yield b'{"detail":"No preinstalled allowlisted solc compiler is available"}'
+
+    class FakeStream:
+        def __enter__(self):
+            return FakeResponse()
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_stream(*_args, **_kwargs):
+        calls.append(True)
+        return FakeStream()
+
+    monkeypatch.setattr(solc_compiler.httpx, "stream", fake_stream)
+    monkeypatch.setattr("app.services.analyzer_retry.time.sleep", lambda *_args: None)
+
+    with pytest.raises(SolcCompileError, match="No preinstalled allowlisted solc"):
+        compile_to_ast(SIMPLE_SOL, compiler_version="0.8.24")
+
+    assert len(calls) == 1
 
 
 def test_compile_to_ast_returns_sanitized_analyzer_error(monkeypatch):

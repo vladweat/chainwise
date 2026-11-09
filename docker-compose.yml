@@ -82,7 +82,8 @@ services:
 
   celery-worker:
     image: chainwise-backend:latest
-    command: python -m celery -A app.celery_config worker -l info
+    # Match analyzer capacity (two simultaneous compile/Slither requests).
+    command: python -m celery -A app.celery_config worker -l info --concurrency=2
     env_file:
       - path: .env
         required: false

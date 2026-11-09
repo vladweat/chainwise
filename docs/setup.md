@@ -156,8 +156,10 @@ Celery:
 ```bash
 cd backend
 source .venv/bin/activate
-python -m celery -A app.celery_config worker -l info
+python -m celery -A app.celery_config worker -l info --concurrency=2
 ```
+
+Analyzer принимает до двух одновременных задач; если запускаете дополнительные worker-процессы, учитывайте их общую concurrency.
 
 ### Frontend
 

@@ -11,10 +11,14 @@ indexing.load_contract(contract_id)
 Worker запускается Compose-командой:
 
 ```bash
-python -m celery -A app.celery_config worker -l info
+python -m celery -A app.celery_config worker -l info --concurrency=2
 ```
 
 `CELERY_BROKER_URL` и `CELERY_RESULT_BACKEND` указывают на Redis. Отдельные очереди, routing rules, Celery Beat и периодические задачи не настроены. Сериализация задач и результатов — JSON, timezone — UTC, `task_track_started=True`.
+
+## Пропускная способность analyzer
+
+Analyzer одновременно принимает не более двух compile/Slither запросов. Compose worker ограничен `--concurrency=2`, поэтому обычная локальная очередь не отправляет третью задачу в занятый analyzer. При явном HTTP 503 с `Retry-After` клиенты compile и Slither повторяют запрос с ограниченным ожиданием: до 18 повторов и не более 90 секунд суммарно. Другие 503 (например, отсутствующий solc) не повторяются. Celery autoretry не включён: повторная доставка той же задачи не проходит claim уже захваченной попытки. При запуске нескольких worker-процессов их суммарную concurrency нужно держать в пределах двух на analyzer либо одновременно увеличивать ёмкость analyzer.
 
 ## Жизненный цикл задачи и fencing
 

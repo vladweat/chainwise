@@ -9,6 +9,11 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.sentry import capture_pipeline_error
+from app.services.analyzer_retry import (
+    analyzer_busy_retry_delay,
+    is_retryable_analyzer_busy,
+    wait_for_analyzer_retry,
+)
 from app.utils.pragma_parser import parse_pragma_solidity
 
 logger = logging.getLogger(__name__)
@@ -125,20 +130,40 @@ def compile_to_ast(
         raise SolcCompileError("Analyzer request exceeds the 64 MiB limit")
 
     response_body = bytearray()
+    retry_count = 0
+    total_retry_wait = 0.0
+    busy_exhausted = False
     try:
-        with httpx.stream(
-            "POST",
-            f"{settings.slither_url.rstrip('/')}/compile",
-            content=request_body,
-            headers={"content-type": "application/json"},
-            timeout=ANALYZER_TIMEOUT_SECONDS,
-            trust_env=False,
-        ) as response:
-            status_code = response.status_code
-            for chunk in response.iter_bytes():
-                if len(response_body) + len(chunk) > MAX_ANALYZER_RESPONSE_BYTES:
-                    raise SolcCompileError("Analyzer response exceeds the 32 MiB limit")
-                response_body.extend(chunk)
+        while True:
+            response_body.clear()
+            with httpx.stream(
+                "POST",
+                f"{settings.slither_url.rstrip('/')}/compile",
+                content=request_body,
+                headers={"content-type": "application/json"},
+                timeout=ANALYZER_TIMEOUT_SECONDS,
+                trust_env=False,
+            ) as response:
+                status_code = response.status_code
+                if is_retryable_analyzer_busy(response):
+                    delay = analyzer_busy_retry_delay(response, retry_count, total_retry_wait)
+                    if delay is None:
+                        busy_exhausted = True
+                    else:
+                        retry_count += 1
+                        total_retry_wait += delay
+                else:
+                    delay = None
+                    for chunk in response.iter_bytes():
+                        if len(response_body) + len(chunk) > MAX_ANALYZER_RESPONSE_BYTES:
+                            raise SolcCompileError("Analyzer response exceeds the 32 MiB limit")
+                        response_body.extend(chunk)
+
+            if busy_exhausted:
+                break
+            if delay is None:
+                break
+            wait_for_analyzer_retry(delay)
     except SolcCompileError:
         raise
     except httpx.TimeoutException as exc:
@@ -149,6 +174,11 @@ def compile_to_ast(
         error = SolcCompileError("Cannot reach isolated analyzer service")
         capture_pipeline_error("solc", error)
         raise error from exc
+
+    if busy_exhausted:
+        error = SolcCompileError("Analyzer is temporarily at capacity after bounded retries")
+        capture_pipeline_error("solc", error)
+        raise error
 
     try:
         result = json.loads(response_body)
@@ -266,7 +296,14 @@ def _sanitized_analyzer_error(status_code: int, body: object) -> str:
     if status_code == 413:
         return "Analyzer request exceeds configured size limits"
     if status_code == 503:
-        return "No preinstalled allowlisted solc compiler is available"
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if detail == "No preinstalled allowlisted solc compiler is available":
+            return detail
+        if detail == "Preinstalled solc compiler could not be started":
+            return detail
+        if detail == "Analyzer is at capacity; retry later":
+            return "Analyzer is temporarily at capacity; retry analysis."
+        return "Analyzer service is unavailable (HTTP 503)"
     if status_code == 504:
         return "Solidity compilation timed out"
     return f"Analyzer failed to compile Solidity (HTTP {status_code})"
