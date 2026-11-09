@@ -5,6 +5,11 @@ import httpx
 
 from app.core.config import get_settings
 from app.core.sentry import capture_pipeline_error
+from app.services.analyzer_retry import (
+    analyzer_busy_retry_delay,
+    is_retryable_analyzer_busy,
+    wait_for_analyzer_retry,
+)
 from app.services.solc_compiler import (
     DEFAULT_SOLC_VERSION,
     MAX_ANALYZER_REQUEST_BYTES,
@@ -56,18 +61,36 @@ def run_slither(
     if len(request_body) > MAX_ANALYZER_REQUEST_BYTES:
         raise SlitherError("Analyzer request exceeds the 64 MiB limit")
 
+    retry_count = 0
+    total_retry_wait = 0.0
+    busy_exhausted = False
     try:
-        response = httpx.post(
-            f"{settings.slither_url.rstrip('/')}/analyze",
-            content=request_body,
-            headers={"content-type": "application/json"},
-            timeout=120.0,
-            trust_env=False,
-        )
+        while True:
+            response = httpx.post(
+                f"{settings.slither_url.rstrip('/')}/analyze",
+                content=request_body,
+                headers={"content-type": "application/json"},
+                timeout=120.0,
+                trust_env=False,
+            )
+            if not is_retryable_analyzer_busy(response):
+                break
+            delay = analyzer_busy_retry_delay(response, retry_count, total_retry_wait)
+            if delay is None:
+                busy_exhausted = True
+                break
+            retry_count += 1
+            total_retry_wait += delay
+            wait_for_analyzer_retry(delay)
     except httpx.HTTPError as exc:
         logger.exception("Slither request failed")
         capture_pipeline_error("slither", exc)
         raise SlitherError("Cannot reach Slither service") from exc
+
+    if busy_exhausted:
+        error = SlitherError("Analyzer is temporarily at capacity after bounded retries")
+        capture_pipeline_error("slither", error)
+        raise error
 
     if response.status_code != 200:
         error = SlitherError(f"Slither failed (HTTP {response.status_code})")
