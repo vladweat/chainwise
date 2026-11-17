@@ -1,4 +1,4 @@
-# Frontend
+# Веб-интерфейс
 
 ## Стек
 
@@ -20,7 +20,7 @@ frontend/
 ├── src/
 │   ├── app/
 │   │   ├── layout.tsx
-│   │   ├── page.tsx                 # лендинг + health
+│   │   ├── page.tsx                 # главная страница и состояние сервисов
 │   │   ├── login/page.tsx
 │   │   ├── analyze/page.tsx
 │   │   ├── history/page.tsx
@@ -32,7 +32,7 @@ frontend/
 │   │   └── use-contract-chat.ts
 │   ├── lib/
 │   │   ├── api/                     # auth, contracts, chat, client
-│   │   ├── api.ts                   # barrel re-export
+│   │   ├── api.ts                   # единая точка экспорта
 │   │   ├── contract-status.ts
 │   │   ├── contract-storage.ts
 │   │   ├── auth-storage.ts
@@ -58,7 +58,7 @@ frontend/
 │   │   ├── history-list.tsx
 │   │   ├── contract-status-badge.tsx
 │   │   ├── risk-score-badge.tsx
-│   │   └── ui/                      # shadcn primitives
+│   │   └── ui/                      # компоненты shadcn
 │   ├── lib/
 │   │   ├── api.ts
 │   │   ├── auth-storage.ts
@@ -72,9 +72,9 @@ frontend/
 
 ## API-клиент
 
-Базовый URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8001`).
+Базовый URL: `NEXT_PUBLIC_API_URL` (по умолчанию `http://localhost:8001`).
 
-JWT: HttpOnly cookies `cw_access` / `cw_refresh` (`credentials: 'include'`). Bearer в JSON login-ответа UI не сохраняет. Старый ключ `localStorage.chainwise_token` сбрасывается при загрузке.
+JWT: cookie с HttpOnly `cw_access` / `cw_refresh` (`credentials: 'include'`). Токен Bearer из JSON-ответа входа интерфейс не сохраняет. Старый ключ `localStorage.chainwise_token` сбрасывается при загрузке.
 
 | Функция | Эндпоинт |
 |---|---|
@@ -94,7 +94,7 @@ JWT: HttpOnly cookies `cw_access` / `cw_refresh` (`credentials: 'include'`). Bea
 | `fetchContractFindings(id)` | `GET /api/v1/contracts/{id}/findings` |
 | `fetchContractSource(id)` | `GET /api/v1/contracts/{id}/source` |
 
-Сети в UI: Ethereum (1), BSC (56), Abstract (11124). Для файла `chain_id` по умолчанию `0`.
+Сети в интерфейсе: Ethereum (1), BSC (56), Abstract (11124). Для файла `chain_id` по умолчанию `0`.
 
 Статус индексации опрашивается каждые 2 с на `/contracts/[id]`, пока не `ready` / `loaded` / `failed`.
 
@@ -102,49 +102,49 @@ JWT: HttpOnly cookies `cw_access` / `cw_refresh` (`credentials: 'include'`). Bea
 
 | Маршрут | Описание |
 |---|---|
-| `/` | Лендинг, health, CTA |
-| `/login` | Email/пароль + Google Identity Services |
+| `/` | Главная страница, состояние сервисов и переход к анализу |
+| `/login` | Почта и пароль + Google Identity Services |
 | `/analyze` | Загрузка адреса или `.sol`/`.zip` |
-| `/contracts/[id]` | После `ready`: чат + сворачиваемая панель findings/исходник (на мобилке — оверлей). «Отчёт» — оверлей шагов. **PDF** качает `GET /contracts/{id}/report` |
+| `/contracts/[id]` | После `ready`: чат + сворачиваемая панель найденных проблем и исходника (на телефоне — оверлей). «Отчёт» — оверлей шагов. **PDF** скачивается через `GET /contracts/{id}/report` |
 | `/history` | Список контрактов пользователя |
 
-Кнопка **PDF** на `/contracts/[id]` (шапка и оверлей) вызывает `downloadContractReport` → `GET /api/v1/contracts/{id}/report`. Контракт должен быть `ready`. После смены UI — `make up-frontend`.
+Кнопка **PDF** на `/contracts/[id]` (шапка и оверлей) вызывает `downloadContractReport` → `GET /api/v1/contracts/{id}/report`. Контракт должен быть `ready`. После изменения интерфейса — `make up-frontend`.
 
 Оверлей «Отчёт индексации» — шаги пайплайна (закрыть: крестик, фон, Escape).
 
-Дальше по UI: клик по цитате чата подсвечивает те же строки исходника, что и finding. Пустой индекс — тот же отказ, что `NO_CONTEXT_ANSWER` на бэкенде, без «Печатает…».
+Работа в интерфейсе: клик по цитате чата подсвечивает те же строки исходника, что и найденная проблема. Пустой индекс — тот же отказ, что `NO_CONTEXT_ANSWER` на бэкенде, без «Печатает…».
 
-Google: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (тот же `GOOGLE_CLIENT_ID`, что у backend). Без значения кнопка скрыта. В Google Cloud Console в Authorized JavaScript origins добавьте `http://localhost:3000` и `http://localhost:3001`.
+Google: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (тот же `GOOGLE_CLIENT_ID`, что у сервера). Без значения кнопка скрыта. В Google Cloud Console в разделе разрешённых источников JavaScript добавьте `http://localhost:3000` и `http://localhost:3001`.
 
-## Offline Dockerfile
+## Dockerfile для сборки без сети
 
 ```dockerfile
 COPY node_modules ./node_modules
 COPY . .
 RUN npm run build
-CMD ["node", "node_modules/next/dist/bin/next", "start", ...]
+CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
 ```
 
-`NEXT_PUBLIC_*` задаются как `ARG` при сборке. После смены URL или Google Client ID:
+`NEXT_PUBLIC_*` задаются как `ARG` при сборке. После смены URL или идентификатора клиента Google:
 
 ```bash
 make up-frontend
 ```
 
-## Локальный dev
+## Локальная разработка
 
 ```bash
 cd frontend
 npm install
-NEXT_PUBLIC_GOOGLE_CLIENT_ID=<тот же GOOGLE_CLIENT_ID> npm run dev
+NEXT_PUBLIC_GOOGLE_CLIENT_ID='идентификатор клиента Google' npm run dev
 ```
 
-Dev-сервер слушает порт 3000; в Docker frontend проброшен на **3001**. CORS backend разрешает оба.
+Сервер разработки слушает порт 3000; интерфейс в Docker доступен на порту 3001. Настройки CORS API разрешают оба адреса.
 
-## UI-конвенции
+## Правила интерфейса
 
 - Tailwind 4 через `@import "tailwindcss"` в `globals.css`
 - Тёмная тема по умолчанию
 - Shadcn-примитивы в `src/components/ui/`; панели с анимацией — `Panel`
 - Framer Motion для карточек и шагов индексации
-- Адаптив: viewport `device-width` + `viewportFit: cover`; шапка и чат учитывают safe-area; отчёт на телефоне — нижний sheet; поля ввода 16px (без зума iOS).
+- Адаптив: размер области просмотра `device-width` и `viewportFit: cover`; шапка и чат учитывают безопасную область экрана; отчёт на телефоне — нижняя выдвижная панель; поля ввода 16px (без зума iOS).

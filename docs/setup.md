@@ -7,7 +7,7 @@
 | Docker + Docker Compose | Compose v2.24+ |
 | Python (на хосте) | **3.12** |
 | Node.js + npm (на хосте) | **20+** |
-| curl | для smoke test |
+| curl | для проверки запуска |
 
 Базовые образы (`python:3.12-slim`, `node:20-alpine`, `postgres`/`pgvector`, `redis:7`, `qdrant`) нужно один раз скачать, пока есть интернет.
 
@@ -20,10 +20,10 @@ make deps
 
 Команда `make deps` выполняет `venv` + `venv-slither` + `deps-frontend`.
 
-| Target | Действие |
+| Цель Makefile | Действие |
 |---|---|
 | `make venv` | `backend/.venv` + pip + solc 0.8.24 + MiniLM ONNX в `backend/.models` |
-| `make solc` | только бинарник solc 0.8.24 (venv уже есть) |
+| `make solc` | только бинарник solc 0.8.24 (виртуальное окружение уже есть) |
 | `make embeddings` | только модель `all-MiniLM-L6-v2` |
 | `make venv-slither` | `slither/.venv` + pip (`slither-analyzer`) |
 | `make deps-frontend` | `frontend/node_modules` |
@@ -49,15 +49,15 @@ cd ..
 make up
 ```
 
-## Шаг 2 — запуск (offline)
+## Шаг 2 — запуск (без сети)
 
 ```bash
 make up
 ```
 
-Контейнеры: postgres, redis, qdrant, slither, backend, celery-worker, frontend.
+Сервисы: `postgres`, `redis`, `qdrant`, `slither`, `backend`, `celery-worker`, `frontend`.
 
-Миграции Alembic применяются при старте backend. Вручную:
+Миграции Alembic применяются при старте сервера. Вручную:
 
 ```bash
 make migrate
@@ -86,22 +86,22 @@ curl http://localhost:8001/health
 
 Открыть в браузере:
 
-- http://localhost:3001 — frontend
+- http://localhost:3001 — интерфейс
 - http://localhost:8001/docs — Swagger
 - http://localhost:6333/dashboard — Qdrant
 
-Sentry на localhost не нужен: `SENTRY_DSN` в `.env` оставьте пустым. Подключение облака — [environment.md § Sentry](./environment.md#sentry).
+Sentry на localhost не нужен: `SENTRY_DSN` в `.env` оставьте пустым. Подключение облака — [настройку Sentry](./environment.md#sentry).
 
 ## Полезные команды
 
 ```bash
-make logs         # логи backend + frontend
+make logs         # журналы сервера и интерфейса
 make logs-frontend
-make test         # pytest в контейнере backend
-make lint         # flake8 в контейнере backend
+make test         # pytest в серверном контейнере
+make lint         # flake8 в серверном контейнере
 make train-risk   # переобучить XGBoost на синтетике
-make up-fast      # up без пересборки образов
-make up-frontend  # пересобрать только frontend
+make up-fast      # запуск без пересборки образов
+make up-frontend  # пересобрать только интерфейс
 make down
 make build        # пересобрать образы (--no-cache)
 ```
@@ -110,10 +110,10 @@ make build        # пересобрать образы (--no-cache)
 
 На каждый `push` и `pull_request`: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
 
-| Job | Что делает |
+| Задание | Что делает |
 |---|---|
-| `backend-lint` | flake8 (`backend/.flake8`, max-line-length 120) |
-| `frontend-typecheck` | `npm ci` + `npx tsc --noEmit` |
+| `backend-lint` | flake8; предельная длина строки — 120 символов |
+| `frontend-typecheck` | `npm ci`, `npx tsc --noEmit`, `npm test`, `npm run test:risk-copy` |
 | `backend-test` | pytest; сервисы pgvector/pg15 и Redis 7 |
 
 Локально то же: `make lint` и `make test` (pytest в контейнере, БД `chainwise_test`).
@@ -128,18 +128,18 @@ make up
 
 ## Локальный запуск без Docker
 
-Полностью host-native workflow не автоматизирован. Практический hybrid-вариант оставляет data services в Compose, отдельно публикует Slither и запускает API/frontend на host.
+Полностью локальный запуск без Docker не автоматизирован. Смешанный вариант оставляет хранилища в Compose, отдельно публикует Slither и запускает API и интерфейс на хосте.
 
-### Инфра
+### Инфраструктура
 
 ```bash
 docker compose up -d postgres redis qdrant
 docker compose run --rm -p 127.0.0.1:8002:8000 slither
 ```
 
-Порты сервисов данных опубликованы только на `127.0.0.1`, поэтому host-native backend ниже подключается через `localhost`; с других машин они недоступны. Вторая команда остаётся foreground-процессом. Для Slither нужны `backend/.solc` и `slither/.venv`.
+Порты сервисов данных опубликованы только на `127.0.0.1`, поэтому сервер на хосте ниже подключается через `localhost`; с других машин они недоступны. Вторая команда остаётся процессом в текущем терминале. Для Slither нужны `backend/.solc` и `slither/.venv`.
 
-### Backend
+### Серверная часть
 
 ```bash
 cd backend
@@ -159,28 +159,28 @@ source .venv/bin/activate
 python -m celery -A app.celery_config worker -l info --concurrency=2
 ```
 
-Analyzer принимает до двух одновременных задач; если запускаете дополнительные worker-процессы, учитывайте их общую concurrency.
+Анализатор принимает до двух одновременных задач; если запускаете дополнительные процессы обработчиков, учитывайте общее число параллельных задач.
 
-### Frontend
+### Веб-интерфейс
 
-Для быстрой итерации UI (без пересборки Docker-образа):
+Для быстрой разработки интерфейса (без пересборки Docker-образа):
 
 ```bash
 cd frontend
 NEXT_PUBLIC_API_URL=http://localhost:8001 npm run dev
 ```
 
-Откройте http://localhost:3000 (dev) против API на :8001. Compose-сборка frontend по-прежнему на :3001 и требует `make up-frontend` после смены `NEXT_PUBLIC_*`.
+Откройте http://localhost:3000 в режиме разработки с API на :8001. Compose-сборка интерфейса по-прежнему на :3001 и требует `make up-frontend` после смены `NEXT_PUBLIC_*`.
 
-`NEXT_PUBLIC_API_URL` по умолчанию: `http://localhost:8001`. Кнопка Google: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (тот же Client ID, что в `.env` как `GOOGLE_CLIENT_ID`). После смены в образе — `make up-frontend`.
+`NEXT_PUBLIC_API_URL` по умолчанию: `http://localhost:8001`. Кнопка Google: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` (тот же идентификатор клиента, что в `.env` как `GOOGLE_CLIENT_ID`). После смены в образе — `make up-frontend`.
 
-## Troubleshooting
+## Устранение неполадок
 
 ### `uvicorn: executable file not found`
 
-В docker-compose используется `python -m uvicorn`, не бинарник `uvicorn` из venv.
+В docker-compose используется `python -m uvicorn`, не бинарник `uvicorn` из виртуального окружения.
 
-### Frontend не видит API
+### Интерфейс не видит API
 
 `NEXT_PUBLIC_API_URL` вшивается **на этапе сборки** образа:
 
@@ -188,7 +188,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8001 npm run dev
 make up-frontend
 ```
 
-### Backend `status: degraded`
+### Сервер сообщает `status: degraded`
 
 ```bash
 docker compose ps
@@ -197,16 +197,16 @@ docker compose logs postgres redis qdrant slither backend celery-worker
 
 ### Индексация зависает в `indexing`
 
-Проверь `celery-worker` и `slither`. Ошибка пишется в `GET /contracts/{id}/status` → `last_error`.
+Проверьте `celery-worker` и `slither`. Ошибка пишется в `GET /contracts/{id}/status` → `last_error`.
 
 ### Etherscan 503
 
-Заполни `ETHERSCAN_API_KEY` в `.env` и перезапусти backend.
+Заполните `ETHERSCAN_API_KEY` в `.env` и перезапустите сервер.
 
-### RAG-чат 503 / name resolution
+### Ошибка 503 в RAG-чате или ошибка разрешения имени
 
-Проверь `OPENAI_API_KEY` и доступность настроенного OpenAI-compatible endpoint из backend-контейнера. По умолчанию используются `https://api.openai.com/v1` и модель `gpt-4o-mini`; для другого совместимого сервиса можно задать `OPENAI_BASE_URL` и `OPENAI_MODEL` в `.env`, затем пересоздать backend. Без ключа ответы с найденными чанками не генерируются.
+Проверьте `OPENAI_API_KEY` и доступность настроенного сервиса, совместимого с OpenAI, из серверного контейнера. По умолчанию используются `https://api.openai.com/v1` и модель `gpt-4o-mini`; для другого совместимого сервиса можно задать `OPENAI_BASE_URL` и `OPENAI_MODEL` в `.env`, затем пересоздать серверный контейнер. Без ключа ответы с найденными чанками не генерируются.
 
-### Offline build падает
+### Сборка без сети завершается ошибкой
 
-Убедись, что `backend/.venv`, `backend/.solc`, `backend/.models`, `slither/.venv` и `frontend/node_modules` существуют и собраны на Linux x86_64.
+Убедитесь, что `backend/.venv`, `backend/.solc`, `backend/.models`, `slither/.venv` и `frontend/node_modules` существуют и собраны на Linux x86_64.

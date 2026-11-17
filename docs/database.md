@@ -4,9 +4,9 @@
 
 Образ: `pgvector/pgvector:pg15`.
 
-Миграции Alembic в `backend/alembic/versions/` применяются при старте backend (`alembic upgrade head`).
+Миграции Alembic в `backend/alembic/versions/` применяются при старте сервера (`alembic upgrade head`).
 
-Расширение pgvector предоставляет выбранный image, но migrations не выполняют `CREATE EXTENSION vector`, а приложение не хранит embeddings в PostgreSQL. Все vectors находятся в Qdrant.
+Расширение pgvector предоставляет выбранный образ, но миграции не выполняют `CREATE EXTENSION vector`, а приложение не хранит векторные представления в PostgreSQL. Все векторы находятся в Qdrant.
 
 | Ревизия | Содержание |
 |---|---|
@@ -14,13 +14,13 @@
 | 002 | `contracts.ast` |
 | 003 | `contracts.chunk_count` |
 | 004 | `contracts.last_error` |
-| 005 | `analysis_reports.citations` + unique `(contract_id, question_hash)` |
+| 005 | `analysis_reports.citations` + уникальность `(contract_id, question_hash)` |
 | 006 | `chat_messages` — история чата пользователя по контракту |
 | 007 | `contracts.risk_model`, `features_version` |
-| 008 | Per-user ownership: `UNIQUE(user_id, address, chain_id)`, `user_id NOT NULL`, `ON DELETE CASCADE` |
-| 009 | `contract_artifacts` (source/ast/slither); `contracts.indexing_step` |
-| 010 | durable indexing attempt UUID, heartbeat/claim timestamps and stale-row index |
-| 011 | `contracts.analysis_generation_id` identifies the last completed analysis generation |
+| 008 | Принадлежность пользователю: `UNIQUE(user_id, address, chain_id)`, `user_id NOT NULL`, `ON DELETE CASCADE` |
+| 009 | `contract_artifacts` (исходники, AST, Slither); `contracts.indexing_step` |
+| 010 | UUID попытки индексации, время активности и захвата, индекс зависших записей |
+| 011 | `contracts.analysis_generation_id` указывает последнее завершённое поколение анализа |
 
 ### Таблица `users`
 
@@ -49,10 +49,10 @@ CREATE TABLE contracts (
     is_verified BOOLEAN,
     status VARCHAR(20) DEFAULT 'pending',  -- pending | indexing | loaded | ready | failed
     indexing_step VARCHAR(32),             -- compile | slither | embed | score | done
-    indexing_attempt_id VARCHAR(36),       -- UUID fencing this worker generation
-    analysis_generation_id VARCHAR(36),     -- UUID of the last successfully published generation
-    indexing_heartbeat_at TIMESTAMPTZ,     -- updated between pipeline steps
-    indexing_claimed_at TIMESTAMPTZ,       -- atomic one-delivery claim
+    indexing_attempt_id VARCHAR(36),       -- UUID текущей попытки обработчика
+    analysis_generation_id VARCHAR(36),     -- UUID последнего успешного поколения
+    indexing_heartbeat_at TIMESTAMPTZ,     -- обновляется между этапами обработки
+    indexing_claimed_at TIMESTAMPTZ,       -- атомарный захват одной доставкой
     celery_task_id VARCHAR(255),
     risk_score CHAR(1),                    -- A | B | C | D
     risk_model VARCHAR(20),
@@ -64,7 +64,7 @@ CREATE TABLE contracts (
 );
 ```
 
-Тяжёлые поля (`source_code`, `ast`, `slither_report`) вынесены в `contract_artifacts` (1:1, CASCADE). ORM-свойства `Contract.source_code` / `.ast` / `.slither_report` делегируют в artifact.
+Тяжёлые поля (`source_code`, `ast`, `slither_report`) вынесены в `contract_artifacts` (1:1, CASCADE). ORM-свойства `Contract.source_code` / `.ast` / `.slither_report` обращаются к записи артефакта.
 
 ### Таблица `contract_artifacts`
 
@@ -79,10 +79,10 @@ CREATE TABLE contract_artifacts (
 
 ### Таблица `analysis_reports`
 
-Кеш ответов LLM. Ключ вопроса включает версию cache, `analysis_generation_id` и текст
+Кеш ответов LLM. Ключ вопроса включает версию кеша, `analysis_generation_id` и текст
 вопроса; уникальность строки — `(contract_id, question_hash)`. Redis использует тот же
 хеш в ключе. Поколение публикуется только вместе с переходом контракта в `ready`, поэтому
-переиндексация читает отдельные Redis/DB cache entries и отдельные Qdrant chunks. Старые
+переиндексация читает отдельные записи кеша Redis и БД и отдельные фрагменты Qdrant. Старые
 записи не удаляются для корректности и не смешиваются с новым поколением. При миграции
 готовых контрактов PR-06 поколение переносится из `indexing_attempt_id`.
 
@@ -91,7 +91,7 @@ CREATE TABLE analysis_reports (
     id SERIAL PRIMARY KEY,
     contract_id INTEGER REFERENCES contracts(id) ON DELETE CASCADE,
     user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    question_hash VARCHAR(64) NOT NULL,    -- SHA256(question)
+    question_hash VARCHAR(64) NOT NULL,    -- SHA-256 от версии кеша, поколения и вопроса
     llm_answer TEXT,
     citations JSONB,                       -- [{file_path, function_name, start_line, end_line, content}]
     tokens_used INTEGER,
@@ -101,9 +101,9 @@ CREATE TABLE analysis_reports (
 );
 ```
 
-Уникальность контрактов **per-user** по `(user_id, address, chain_id)`. Один on-chain адрес у двух пользователей — две независимые копии (и две индексации). Upload без on-chain адреса использует синтетический `0x` + SHA256.
+Уникальность контрактов отдельно для каждого пользователя по `(user_id, address, chain_id)`. Один адрес в блокчейне у двух пользователей — две независимые копии (и две индексации). Загрузка без адреса в блокчейне использует синтетический `0x` + SHA256.
 
-История диалога в UI — отдельная таблица `chat_messages`. Кеш не является лентой: один и тот же вопрос может повторяться в чате, ключ кеша уникален.
+История диалога в интерфейсе — отдельная таблица `chat_messages`. Кеш не является лентой: один и тот же вопрос может повторяться в чате, ключ кеша уникален.
 
 ### Таблица `chat_messages`
 
@@ -132,27 +132,27 @@ CREATE TABLE chat_messages (
 | Запись `analysis_reports` | ✅ RAG |
 | Запись `chat_messages` | ✅ лента чата |
 | PDF-отчёт | ✅ генерируется из `contracts` + `slither_report`, отдельной таблицы нет |
-| `risk_model` / `features_version` на контракте | ✅ колонки + поля status |
+| `risk_model` / `features_version` на контракте | ✅ колонки + поля статуса |
 
-`UNIQUE(user_id, address, chain_id)` — идемпотентность загрузки **внутри аккаунта**; UI «уже разобран» только для своего ряда.
+`UNIQUE(user_id, address, chain_id)` — идемпотентность загрузки **внутри аккаунта**; повторное использование результата доступно только владельцу записи.
 
 ### Индексы и ограничения
 
-- `users.email` — unique constraint и отдельный non-unique index, созданные migration 001;
-- `users.google_id` — unique constraint;
-- `contracts(user_id, address, chain_id)` — unique constraint migration 008;
-- `contracts(status, indexing_heartbeat_at)` — stale indexing reconciliation migration 010;
-- `analysis_reports(contract_id, question_hash)` — unique constraint;
-- `analysis_reports.question_hash`, `chat_messages.contract_id`, `chat_messages.user_id` — indexes;
+- `users.email` — ограничение уникальности и отдельный неуникальный индекс, созданные миграцией 001;
+- `users.google_id` — ограничение уникальности;
+- `contracts(user_id, address, chain_id)` — ограничение уникальности миграции 008;
+- `contracts(status, indexing_heartbeat_at)` — сверка зависшей индексации миграции 010;
+- `analysis_reports(contract_id, question_hash)` — ограничение уникальности;
+- `analysis_reports.question_hash`, `chat_messages.contract_id`, `chat_messages.user_id` — индексы;
 - `contract_artifacts.contract_id` — одновременно PK и FK.
 
-Значения `status`, `role`, `risk_score` и `chat_messages.role` ограничены длиной колонок, но не CHECK/DB enum. Допустимые значения контролирует application code.
+Значения `status`, `role`, `risk_score` и `chat_messages.role` ограничены длиной колонок, но не ограничениями CHECK или перечислениями БД. Допустимые значения контролирует код приложения.
 
-### Session и transaction boundaries
+### Сессии и границы транзакций
 
-`core/deps.get_db` создаёт session на HTTP request и закрывает её без автоматического commit. Services коммитят явно. Создание контракта и публикация Celery-задачи не атомарны: row с attempt UUID и заранее сгенерированным `celery_task_id` сначала коммитится, затем task публикуется. Публикационная ошибка conditionally переводит только эту попытку в `failed`; если API погиб между DB commit и publish, её найдёт stale reconciler.
+`core/deps.get_db` создаёт сессию на HTTP-запрос и закрывает её без автоматической фиксации транзакции. Сервисы фиксируют изменения явно. Контракт с UUID попытки и `celery_task_id` сохраняется до публикации сообщения. Ошибка публикации переводит только актуальную попытку в `failed`; при гибели API между этими действиями зависшую запись находит сверка.
 
-Worker атомарно claim-ит попытку и блокирует строку с проверкой UUID перед каждым commit. Qdrant не участвует в SQL-транзакции; его точки разделены по UUID поколения и читаются только по UUID READY-ряда. Подробности — [background-jobs.md](./background-jobs.md).
+Обработчик атомарно захватывает попытку и блокирует строку с проверкой UUID перед каждым изменением. Qdrant не участвует в SQL-транзакции: его точки разделены по поколениям, поиск читает только успешное поколение. См. [фоновые задачи](./background-jobs.md).
 
 ---
 
@@ -162,31 +162,31 @@ Worker атомарно claim-ит попытку и блокирует стро
 
 | Поле | Тип | Описание |
 |---|---|---|
-| Vector | 384 dim | FastEmbed `all-MiniLM-L6-v2` |
-| `contract_id` | int | FK на contracts |
+| Вектор | 384 измерения | FastEmbed `all-MiniLM-L6-v2` |
+| `contract_id` | int | Ссылка на contracts |
 | `file_path` | string | Путь к файлу |
 | `function_name` | string | Имя функции/модификатора |
-| `start_line` | int | Начало чанка |
-| `end_line` | int | Конец чанка |
+| `start_line` | int | Начало фрагмента |
+| `end_line` | int | Конец фрагмента |
 | `content` | text | Исходный код |
 
-Точки разделяются по `contract_id` и `indexing_attempt_id`. Новый generation записывается отдельно; поисковые запросы фильтруют только `analysis_generation_id` контракта в `READY`, поэтому не смешивают поколения во время reindex. Неиспользуемые failed/stale generations автоматически не очищаются.
+Точки разделяются по `contract_id` и `indexing_attempt_id`. Новое поколение записывается отдельно; поиск фильтрует `analysis_generation_id` готового контракта. Сверка `reconcile_indexing --apply` удаляет неактивные поколения и точки удалённых контрактов, сохраняя успешное и выполняющееся поколения.
 
-Dashboard: http://localhost:6333/dashboard
+Панель управления: http://localhost:6333/dashboard
 
 ---
 
 ## Redis
 
-| Key pattern | Назначение |
+| Шаблон ключа | Назначение |
 |---|---|
-| `indexing_lock:{user_id}:{chain_id}:{address}` | Идемпотентность индексации per-user (TTL 3600 с) |
-| `llm_cache:v6:{contract_id}:{question_hash}` | Кеш ответов LLM (TTL 86400 с) |
-| `rl:analyze:{user_id}` / `rl:chat:{user_id}` | Rate limit (окно 60 с) |
+| `indexing_lock:{user_id}:{chain_id}:{address}` | Идемпотентность индексации отдельно для пользователя (TTL 3600 с) |
+| `llm_cache:v7:{contract_id}:{question_hash}` | Кеш ответов LLM (TTL 86400 с) |
+| `rl:analyze:{user_id}` / `rl:chat:{user_id}` | Ограничение частоты запросов (окно 60 с) |
 | `quota:analyze:{user_id}:{YYYYMMDD}` / `quota:chat:...` | Дневные квоты |
-| `refresh:{jti}` | Refresh JWT (TTL `REFRESH_TOKEN_EXPIRE_MINUTES`) |
+| `refresh:{jti}` | JWT обновления (TTL `REFRESH_TOKEN_EXPIRE_MINUTES`) |
 
-Broker Celery: `CELERY_BROKER_URL` = Redis.
+Брокер Celery: `CELERY_BROKER_URL` = Redis.
 
 ---
 
@@ -194,12 +194,12 @@ Broker Celery: `CELERY_BROKER_URL` = Redis.
 
 ```mermaid
 erDiagram
-    users ||--o{ contracts : owns
-    contracts ||--|| contract_artifacts : stores
-    users ||--o{ analysis_reports : asks
-    contracts ||--o{ analysis_reports : has
-    users ||--o{ chat_messages : writes
-    contracts ||--o{ chat_messages : has
+    users ||--o{ contracts : владеет
+    contracts ||--|| contract_artifacts : хранит
+    users ||--o{ analysis_reports : запрашивает
+    contracts ||--o{ analysis_reports : содержит
+    users ||--o{ chat_messages : пишет
+    contracts ||--o{ chat_messages : содержит
 
     users {
         int id PK
