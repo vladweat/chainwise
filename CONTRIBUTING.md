@@ -2,7 +2,7 @@
 
 ## Подготовка
 
-Следуйте [инструкции установки](./docs/setup.md). Основной поддерживаемый workflow использует Docker Compose и заранее подготовленные host-зависимости:
+Следуйте [инструкции установки](./docs/setup.md). Основной поддерживаемый способ разработки использует Docker Compose и заранее подготовленные зависимости хоста:
 
 ```bash
 cp .env.example .env
@@ -11,28 +11,28 @@ make up
 make health
 ```
 
-Не добавляйте `.env`, токены, реальные API keys, исходники приватных контрактов или production dumps.
+Не добавляйте `.env`, токены, реальные ключи API, исходники приватных контрактов или дампы рабочей базы.
 
 ## Границы модулей
 
-- `backend/app/api` — HTTP parsing, dependencies и response mapping;
-- `backend/app/services` — orchestration и integrations;
-- `backend/app/models` + `backend/alembic` — persistence;
-- `backend/app/schemas` — внешние Pydantic contracts;
-- `frontend/src/lib/api` — browser API client;
-- `slither` — изолированный HTTP wrapper над Slither subprocess.
+- `backend/app/api` — разбор HTTP-запросов, внедрение зависимостей и формирование ответов;
+- `backend/app/services` — координация обработки и интеграции;
+- `backend/app/models` + `backend/alembic` — хранение данных;
+- `backend/app/schemas` — внешние контракты Pydantic;
+- `frontend/src/lib/api` — клиент API для браузера;
+- `slither` — изолированная HTTP-оболочка для дочернего процесса Slither.
 
-Существующий код — модульный монолит, не формальная Clean Architecture. Не скрывайте FastAPI/ORM coupling в документации.
+Существующий код — модульный монолит, без строгого разделения на независимые архитектурные слои. Не скрывайте связность FastAPI и ORM в документации.
 
 ## Изменения схемы и API
 
-- Создавайте новую последовательную Alembic revision; не редактируйте уже применённую migration.
-- Проверяйте upgrade и, где возможно, downgrade на disposable DB.
-- Синхронизируйте Pydantic schemas, frontend types, tests и краткое описание в `docs/api.md`.
-- Сохраняйте ownership filter и поведение `404` для чужих контрактов.
+- Создавайте новую последовательную ревизию Alembic; не редактируйте уже применённую миграцию.
+- Проверяйте применение миграций и, где возможно, откат на временной БД.
+- Синхронизируйте схемы Pydantic, типы интерфейса, тесты и краткое описание в `docs/api.md`.
+- Сохраняйте фильтрацию по владельцу и поведение `404` для чужих контрактов.
 - Для новой конфигурации обновляйте `core/config.py`, `.env.example` и `docs/environment.md`.
 
-## Проверки перед review
+## Проверки перед отправкой изменений
 
 ```bash
 make lint
@@ -40,17 +40,17 @@ make test
 cd frontend && npx tsc --noEmit
 ```
 
-CI выполняет эти три класса проверок. `make test` измеряет coverage только `app.utils.pragma_parser` и `app.services.risk_scorer`; зелёный threshold не означает 80% всего backend. Для UI unit/E2E framework пока не настроен.
+Автоматические проверки запускают flake8, TypeScript, тесты интерфейса и серверные тесты с PostgreSQL и Redis. `make test` измеряет покрытие серверного кода; отдельный порог 80% применяется к `app.utils.pragma_parser` и `app.services.risk_scorer`. Этот порог не означает 80% покрытия всего сервера. Тесты интерфейса запускаются через `npm test` и `npm run test:risk-copy`; браузерный тестовый стенд не настроен.
 
-Добавляйте тесты для изменённого поведения, особенно для user isolation, auth cookies/CSRF, task idempotency, archive limits, cache и error paths внешних сервисов.
+Добавляйте тесты для изменённого поведения, особенно для изоляции пользователей, аутентификации через cookie и CSRF, идемпотентности задач, ограничений архивов, кеша и обработки ошибок внешних сервисов.
 
 ## Документация
 
-Пишите по-русски, оставляя code symbols, API names и commands на английском. Источники истины:
+Пишите по-русски, оставляя идентификаторы кода, названия API и команды на английском. Источники истины:
 
-- API — routes/schemas и runtime OpenAPI;
-- DB — Alembic;
-- env — `core/config.py` и Compose overrides;
+- API — маршруты, схемы и OpenAPI работающего приложения;
+- БД — Alembic;
+- окружение — `core/config.py` и переопределения Compose;
 - команды — Makefile и CI.
 
 Обновляйте существующий документ вместо создания параллельного. Непроверенные сведения обозначайте как ограничение или вопрос.

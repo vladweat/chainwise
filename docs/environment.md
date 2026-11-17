@@ -26,7 +26,7 @@ SLITHER_URL=http://slither:8000
 ETHERSCAN_API_KEY=
 RISK_MODEL_PATH=/app/ml_models/risk_xgb_model.pkl
 OPENAI_API_KEY=
-# Optional OpenAI-compatible gateway configuration.
+# Необязательная настройка сервиса, совместимого с OpenAI.
 # OPENAI_BASE_URL=https://api.example.com/v1
 # OPENAI_MODEL=your-model-name
 SENTRY_DSN=
@@ -45,31 +45,31 @@ NEXT_PUBLIC_API_URL=http://localhost:8001
 
 `OPENAI_API_KEY` нужен для RAG-чата (`POST /contracts/{id}/chat`). Без ключа чат отдаёт `503`, если нет попадания в кеш и в Qdrant есть чанки.
 
-Стандартная конфигурация использует `https://api.openai.com/v1` и модель `gpt-4o-mini`. Для других OpenAI-compatible сервисов задайте `OPENAI_BASE_URL` и `OPENAI_MODEL`.
+Для обычного ключа используются `https://api.openai.com/v1` и `gpt-4o-mini`. Код также распознаёт ключи поддерживаемого шлюза и выбирает его адрес и модель. Чтобы задать сервис однозначно, укажите `OPENAI_BASE_URL` и `OPENAI_MODEL`: явные значения имеют приоритет.
 
-Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с). Дневные квоты: `quota:*` + `QUOTA_MAX_CONTRACTS`. JWT для SPA — HttpOnly cookies `cw_access` / `cw_refresh`; Bearer по-прежнему принимается (Swagger, тесты). Cookie-мутации требуют `X-Requested-With`.
+Ограничение частоты запросов: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с). Дневные квоты: `quota:*` + `QUOTA_MAX_CONTRACTS`. JWT для браузерного приложения — cookie с HttpOnly `cw_access` / `cw_refresh`; Bearer по-прежнему принимается (Swagger, тесты). Изменяющие запросы с cookie требуют `X-Requested-With`.
 
-## Обязательность и defaults
+## Обязательные параметры и значения по умолчанию
 
-Все поля `Settings` имеют code defaults, поэтому Pydantic формально не требует ни одной переменной. Для рабочего Compose значения подключения переопределяются в `docker-compose.yml`. Для конкретных функций:
+Все поля `Settings` имеют значения в коде по умолчанию, поэтому Pydantic формально не требует ни одной переменной. Для рабочего Compose значения подключения переопределяются в `docker-compose.yml`. Для конкретных функций:
 
-| Переменная | Когда фактически нужна | Default в code | Использует |
+| Переменная | Когда фактически нужна | По умолчанию в коде | Использует |
 |---|---|---|---|
-| `DATABASE_URL` | всегда | localhost development URL | API, worker |
-| `REDIS_URL` | auth refresh, limits, locks/cache | `redis://localhost:6379/0` | API, worker |
-| `CELERY_BROKER_URL` | индексация | Redis localhost | API, worker |
-| `CELERY_RESULT_BACKEND` | Celery results | Redis localhost | worker |
-| `QDRANT_URL` | индексация и RAG | `http://localhost:6333` | API, worker |
-| `SLITHER_URL` | индексация | `http://slither:8000` | worker, health |
-| `SECRET_KEY` | всегда для auth | небезопасный development placeholder | API |
-| `ETHERSCAN_API_KEY` | analyze по адресу | пусто | API |
-| `OPENAI_API_KEY` | cache miss в RAG при наличии chunks | пусто | API |
-| `GOOGLE_CLIENT_ID` | Google login | пусто | API, frontend build |
-| `SENTRY_DSN` | только Sentry | пусто | API, worker |
+| `DATABASE_URL` | всегда | локальный адрес для разработки | API, обработчик |
+| `REDIS_URL` | обновление сеансов, квоты, блокировки и кеш | `redis://localhost:6379/0` | API, обработчик |
+| `CELERY_BROKER_URL` | индексация | локальный Redis | API, обработчик |
+| `CELERY_RESULT_BACKEND` | результаты задач Celery | локальный Redis | обработчик |
+| `QDRANT_URL` | индексация и RAG | `http://localhost:6333` | API, обработчик |
+| `SLITHER_URL` | индексация | `http://slither:8000` | обработчик, проверка состояния |
+| `SECRET_KEY` | всегда для аутентификации | небезопасная заглушка для разработки | API |
+| `ETHERSCAN_API_KEY` | анализ по адресу | пусто | API |
+| `OPENAI_API_KEY` | промах кеша в RAG при наличии фрагментов | пусто | API |
+| `GOOGLE_CLIENT_ID` | вход через Google | пусто | API, сборка интерфейса |
+| `SENTRY_DSN` | только Sentry | пусто | API, обработчик |
 
-Пустые optional keys отключают соответствующую интеграцию. При `ENVIRONMENT=production` Pydantic Settings проверяет конфигурацию до создания API/worker: сильные неплейсхолдерные `SECRET_KEY` и пароль в PostgreSQL URL, `COOKIE_SECURE=true`, допустимый `COOKIE_SAMESITE`, HTTPS CORS/API origins без localhost и access-token lifetime 5–60 минут. Ошибки redacted и содержат имена параметров и ожидаемые значения без самих секретов. Production Compose overlay также убирает `--reload` и требует настройки production переменных.
+Пустые необязательные ключи отключают соответствующие интеграции. При `ENVIRONMENT=production` настройки проверяются до запуска API и обработчика: сильные секреты и пароль PostgreSQL, `COOKIE_SECURE=true`, допустимый `COOKIE_SAMESITE`, адреса HTTPS без localhost и локальных IP, срок токена доступа 5–60 минут. Сообщения называют параметр и ожидаемое условие, не раскрывая секрет.
 
-Политика access token: 5–60 минут в production, рекомендуется 15 минут. Development default `1440` минут не меняется, а в production должен быть задан явно. TTL refresh-cookie (по умолчанию 7 дней) этой политикой не меняется.
+В рабочей среде рекомендуется срок токена доступа 15 минут; его нужно задать явно. В разработке значение по умолчанию — 1440 минут. Срок cookie обновления по умолчанию — 7 дней.
 
 ## Sentry
 
@@ -79,9 +79,9 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 
 1. Проект Python / FastAPI на [sentry.io](https://sentry.io).
 2. DSN в `.env` (не коммитить): `SENTRY_DSN=https://...@....ingest.sentry.io/...`
-3. `sentry-sdk` в `requirements.txt`; после `pip install` перезапустить **backend и celery-worker**.
+3. `sentry-sdk` в `requirements.txt`; после `pip install` перезапустить **сервер и обработчик Celery**.
 
-В Issues — тег `pipeline_component`: `solc` | `slither` | `llm` | `indexing`. Тела запросов, исходник, ответы LLM, `Authorization` и cookies не отправляются (`send_default_pii=False`).
+В списке ошибок — тег `pipeline_component`: `solc` | `slither` | `llm` | `indexing`. Тела запросов, исходник, ответы LLM, `Authorization` и cookie не отправляются (`send_default_pii=False`).
 
 ## Справочник
 
@@ -90,7 +90,7 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | Переменная | Пример | Описание |
 |---|---|---|
 | `POSTGRES_USER` | `chainwise` | Пользователь PostgreSQL |
-| `POSTGRES_PASSWORD` | development placeholder | Production требует 32+ неплейсхолдерных символов и не менее 12 различных |
+| `POSTGRES_PASSWORD` | заглушка для разработки | В рабочей среде нужен пароль от 32 символов с не менее 12 различными символами, не являющийся заглушкой |
 | `POSTGRES_DB` | `chainwise_db` | Имя БД |
 | `DATABASE_URL` | `postgresql+psycopg2://...@postgres:5432/...` | SQLAlchemy |
 
@@ -99,8 +99,8 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | Переменная | Пример | Описание |
 |---|---|---|
 | `REDIS_URL` | `redis://redis:6379/0` | Redis |
-| `CELERY_BROKER_URL` | `redis://redis:6379/0` | Celery broker |
-| `CELERY_RESULT_BACKEND` | `redis://redis:6379/0` | Celery results |
+| `CELERY_BROKER_URL` | `redis://redis:6379/0` | Брокер Celery |
+| `CELERY_RESULT_BACKEND` | `redis://redis:6379/0` | результаты задач Celery |
 
 ### Векторная БД и эмбеддинги
 
@@ -114,8 +114,8 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 
 | Переменная | Пример | Описание |
 |---|---|---|
-| `SLITHER_URL` | `http://slither:8000` | Sidecar Slither |
-| `RISK_MODEL_PATH` | `/app/ml_models/risk_xgb_model.pkl` | XGBoost pickle |
+| `SLITHER_URL` | `http://slither:8000` | Сервис анализа Slither |
+| `RISK_MODEL_PATH` | `/app/ml_models/risk_xgb_model.pkl` | Файл модели XGBoost в формате pickle |
 
 ### Внешние API
 
@@ -124,26 +124,26 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | `ETHERSCAN_API_KEY` | Загрузка по адресу (Etherscan / BscScan / Abscan) |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 |
 | `OPENAI_API_KEY` | Ключ для RAG-чата (OpenAI или совместимого сервиса) |
-| `OPENAI_BASE_URL` | Опционально. Base URL OpenAI-compatible API; по умолчанию выбирается по ключу |
-| `OPENAI_MODEL` | Опционально. Модель API; по умолчанию выбирается по ключу |
+| `OPENAI_BASE_URL` | Опционально. Базовый адрес API; явное значение имеет приоритет над автоматическим выбором по ключу |
+| `OPENAI_MODEL` | Опционально. Модель API; явное значение имеет приоритет над автоматическим выбором по ключу |
 | `SENTRY_DSN` | Опционально. Пусто — без Sentry (норма для localhost). См. [Sentry](#sentry) |
 
 ### Безопасность
 
 | Переменная | Пример | Описание |
 |---|---|---|
-| `SECRET_KEY` | `openssl rand -hex 32` | JWT signing key |
-| `ALGORITHM` | `HS256` | JWT algorithm |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | Development default: 24ч; production: 5–60 минут, рекомендуется 15 |
-| `REFRESH_TOKEN_EXPIRE_MINUTES` | `10080` | TTL refresh-cookie (7 дней) |
-| `COOKIE_SAMESITE` | `lax` | `lax` для same-site; `none` + `COOKIE_SECURE=true` для cross-site SPA |
-| `COOKIE_SECURE` | `false` | Development default; production требует `true` |
-| `CORS_ORIGINS` | `http://localhost:3001,...` | Development allowlist; production требует HTTPS origins без localhost/loopback |
-| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Лимит `/analyze` и upload |
+| `SECRET_KEY` | `openssl rand -hex 32` | Ключ подписи JWT |
+| `ALGORITHM` | `HS256` | Алгоритм JWT |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | В разработке по умолчанию: 24ч; рабочая среда: 5–60 минут, рекомендуется 15 |
+| `REFRESH_TOKEN_EXPIRE_MINUTES` | `10080` | Срок действия cookie обновления (7 дней) |
+| `COOKIE_SAMESITE` | `lax` | `lax` для запросов в пределах одного сайта; `none` + `COOKIE_SECURE=true` для запросов интерфейса между сайтами |
+| `COOKIE_SECURE` | `false` | В разработке по умолчанию; рабочая среда требует `true` |
+| `CORS_ORIGINS` | `http://localhost:3001,...` | Список разрешённых адресов для разработки; рабочая среда требует адреса HTTPS без localhost и локальных IP |
+| `RATE_LIMIT_ANALYZE_PER_MINUTE` | `10` | Лимит анализа по адресу и загрузки |
 | `RATE_LIMIT_CHAT_PER_MINUTE` | `30` | Лимит `POST /chat` |
-| `QUOTA_MAX_CONTRACTS` | `20` | Макс. контрактов на пользователя (`0` = off) |
-| `QUOTA_ANALYZE_PER_DAY` | `20` | Дневной лимит analyze/upload |
-| `QUOTA_CHAT_PER_DAY` | `100` | Дневной лимит chat |
+| `QUOTA_MAX_CONTRACTS` | `20` | Макс. контрактов на пользователя (`0` = отключено) |
+| `QUOTA_ANALYZE_PER_DAY` | `20` | Дневной лимит анализа и загрузок |
+| `QUOTA_CHAT_PER_DAY` | `100` | Дневной лимит чата |
 
 ### Приложение
 
@@ -152,27 +152,27 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 | `ENVIRONMENT` | `development` | `development` / `production` |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
 
-### Frontend (build-time)
+### Параметры сборки интерфейса
 
 | Переменная | Пример | Описание |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | URL backend для браузера; production требует HTTPS origin без localhost/loopback |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | URL сервера для браузера; рабочая среда требует адрес HTTPS без localhost и локальных IP |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | тот же, что `GOOGLE_CLIENT_ID` | Кнопка Google на `/login` |
 
-> `NEXT_PUBLIC_*` вшивается при `npm run build`. Compose передаёт `GOOGLE_CLIENT_ID` как `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. `NEXT_PUBLIC_API_URL` по умолчанию указывает на локальный backend; production требует HTTPS origin без localhost. Для HTTPS reverse proxy задайте адрес до сборки frontend через production Compose overlay. Для `npm run dev` задайте переменную в окружении.
+> `NEXT_PUBLIC_*` вшивается при `npm run build`. Compose передаёт `GOOGLE_CLIENT_ID` как `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. `NEXT_PUBLIC_API_URL` по умолчанию указывает на локальный сервер; рабочая среда требует адрес HTTPS без localhost. Для обратного прокси HTTPS задайте адрес до сборки интерфейса через дополнительную конфигурацию Compose для рабочей среды. Для `npm run dev` задайте переменную в окружении.
 
-`POSTGRES_*` читает container image PostgreSQL и Compose interpolation; они не являются полями backend `Settings`. Proxy variables и offline flags читаются библиотеками/сервисными модулями или задаются Compose напрямую. Компиляторы solc доступны только analyzer sidecar через read-only mount.
+`POSTGRES_*` читает образ PostgreSQL и механизм подстановки Compose; они не являются полями серверных `Settings`. Параметры прокси и запрета сети читаются библиотеками/сервисными модулями или задаются Compose напрямую. Компиляторы solc доступны только в отдельном сервисе анализа через каталог только для чтения.
 
 В Compose также: `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `LD_LIBRARY_PATH=/usr/local/lib`.
 
-## Docker vs localhost
+## Docker и локальный запуск
 
 | Переменная | В Docker | Локально (без Docker) |
 |---|---|---|
 | `DATABASE_URL` | `@postgres:5432` | `@localhost:5432` |
 | `REDIS_URL` | `redis://redis:6379/0` | `redis://localhost:6379/0` |
 | `QDRANT_URL` | `http://qdrant:6333` | `http://localhost:6333` |
-| `SLITHER_URL` | `http://slither:8000` | `http://127.0.0.1:8000`; нужен отдельно доступный analyzer, Compose-sidecar не публикуется на host |
+| `SLITHER_URL` | `http://slither:8000` | `http://127.0.0.1:8000`; нужен отдельно доступный анализатор, сервис анализа Compose не публикует порт хоста |
 
 ## Генерация секретов
 
@@ -180,4 +180,4 @@ Rate limit: Redis `rl:analyze:{user_id}` / `rl:chat:{user_id}` (окно 60 с).
 openssl rand -hex 32   # SECRET_KEY
 ```
 
-Не выводите итоговое значение в CI logs и не храните его в shell history production-host. Репозиторий не интегрирован с secret manager; способ доставки секретов должен определить deployment environment.
+Не выводите итоговое значение в журналах автоматических проверок и не храните его в истории оболочки рабочего хоста. Репозиторий не интегрирован с системой управления секретами; способ доставки секретов должен определить окружение развёртывания.

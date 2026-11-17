@@ -8,30 +8,30 @@
 |---|---|
 | [Обзор проекта](./overview.md) | Назначение, возможности и ограничения |
 | [Архитектура](./architecture.md) | Стек, схема сервисов, потоки данных |
-| [Фоновые задачи](./background-jobs.md) | Celery lifecycle, lock, ошибки и диагностика |
-| [Установка и запуск](./setup.md) | Offline-сборка, Docker, локальный dev |
-| [Backend](./backend.md) | Структура API-сервера, пайплайн индексации |
-| [Frontend](./frontend.md) | Next.js, компоненты, API-клиент |
+| [Фоновые задачи](./background-jobs.md) | Жизненный цикл Celery, блокировки, ошибки и диагностика |
+| [Установка и запуск](./setup.md) | Сборка без сети, Docker, локальная разработка |
+| [Серверная часть](./backend.md) | Структура API-сервера, пайплайн индексации |
+| [Веб-интерфейс](./frontend.md) | Next.js, компоненты, API-клиент |
 | [API](./api.md) | HTTP-эндпоинты и их поведение |
-| [Model card Risk Score](./risk-score-model-card.md) | Синтетические метки, fallback и ограничения advisory-индикатора |
+| [Описание модели оценки риска](./risk-score-model-card.md) | Синтетические метки и вспомогательная оценка риска |
 | [База данных](./database.md) | PostgreSQL, Qdrant, Redis |
 | [Переменные окружения](./environment.md) | `.env`, секреты, конфигурация |
-| [Эксплуатация](./operations.md) | Startup, health, миграции, recovery и инциденты |
-| [Smoke/E2E](./smoke-e2e.md) | Локальный mocked API flow и opt-in live интеграционный тест |
-| [Результаты проверок](./verification-results.md) | Состояние CI, локальных concurrency/recovery тестов и живого синтетического прогона |
-| [Безопасность](./security.md) | Auth, CSRF/CORS, доверенные границы и ограничения |
+| [Эксплуатация](./operations.md) | Запуск, состояние, миграции, восстановление и инциденты |
+| [Проверка пользовательского сценария](./smoke-e2e.md) | Проверка API с заглушками и отдельный тест настоящих интеграций |
+| [Результаты проверок](./verification-results.md) | Состояние CI, тестов конкурентного доступа, восстановления и полного сценария |
+| [Безопасность](./security.md) | Аутентификация, CSRF/CORS, доверенные границы и ограничения |
 
 ## Быстрый старт
 
 ```bash
 cp .env.example .env
 make deps          # с интернетом
-make up            # offline
+make up            # без сети
 ```
 
-- Frontend: http://localhost:3001
-- API Swagger: http://localhost:8001/docs
-- Qdrant Dashboard: http://localhost:6333/dashboard
+- Веб-интерфейс: http://localhost:3001
+- Документация API Swagger: http://localhost:8001/docs
+- Панель Qdrant: http://localhost:6333/dashboard
 
 ## Структура репозитория
 
@@ -40,12 +40,12 @@ chainwise/
 ├── docs/                 # Документация проекта
 ├── backend/              # FastAPI + Celery
 ├── frontend/             # Next.js 15
-├── slither/              # Sidecar: slither --json
+├── slither/              # Сервис анализа solc и Slither
 ├── ml_models/            # risk_xgb_model.pkl
 ├── .github/workflows/ci.yml
 ├── docker-compose.yml
 ├── Makefile
 ├── .env.example
 ├── CONTRIBUTING.md        # Процесс внесения изменений
-└── README.md              # Быстрый старт и ограничения
+└── README.md              # Быстрый старт
 ```

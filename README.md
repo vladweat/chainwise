@@ -1,65 +1,114 @@
 # ChainWise
 
-ChainWise — локальное веб-приложение для предварительного статического анализа Solidity-кода и поиска по его исходникам с цитатами.
+ChainWise — веб-приложение для статического анализа смарт-контрактов Solidity и поиска ответов по исходному коду с цитатами.
 
-## Что делает система
+## Что можно сделать
 
-- Принимает `.sol`/`.zip` или загружает верифицированный исходник из поддерживаемого explorer.
-- Компилирует allowlisted-версией `solc`, запускает Slither в ограниченном analyzer sidecar и сохраняет результаты.
-- Индексирует исходники для поиска и RAG-чата; показывает findings, строки исходника, цитаты и PDF-отчёт.
-- Даёт дополнительную оценку A–D: это экспериментальный индикатор предварительной проверки, не вероятность эксплуатации и не аудит безопасности.
+- Загрузка одного файла `.sol`, архива `.zip` с несколькими исходниками или верифицированного кода по адресу контракта.
+- Компиляция заранее установленным `solc` и статический анализ Slither.
+- Просмотр найденных проблем, исходного кода и экспериментальной оценки A–D.
+- RAG-чат: поиск по коду, ответ на вопрос и ссылки на файлы и строки.
+- Скачивание PDF-отчёта и история анализов для каждого пользователя.
 
-## Текущая схема
+## Как это работает
+
+Загрузка исходников → компиляция и Slither → разбиение кода на фрагменты → векторизация FastEmbed → сохранение в Qdrant → результаты анализа и чат.
 
 ```mermaid
 flowchart LR
-  Browser --> Frontend[Next.js]
-  Frontend --> API[FastAPI]
-  API --> PostgreSQL
-  API --> Redis[Redis broker/cache]
-  API --> Qdrant
-  Redis --> Worker[Celery worker]
-  Worker --> PostgreSQL
-  Worker --> Qdrant
-  Worker --> Analyzer[Solc + Slither sidecar]
-  API --> LLM[OpenAI-compatible API<br/>для чата]
+    User[Браузер] --> UI[Интерфейс Next.js]
+    UI --> API[API FastAPI]
+    API --> PG[(PostgreSQL)]
+    API --> Redis[(Redis)]
+    Redis --> Worker[Обработчик Celery]
+    Worker --> Analyzer[Анализатор solc и Slither]
+    Worker --> PG
+    Worker --> Qdrant[(Qdrant)]
+    API --> Qdrant
+    API --> LLM[Языковая модель]
 ```
 
-Поток анализа: загрузка исходника → компиляция AST и Slither findings → embeddings в Qdrant → публикация готового поколения; чат ищет только по этому поколению, затем возвращает ответ с citations.
+PostgreSQL хранит пользователей, исходники и результаты. Redis обслуживает очередь задач и кеш. Qdrant хранит векторы фрагментов кода; чат использует только успешно завершённое поколение анализа.
 
-## Локальный Quickstart
+## Быстрый старт
 
-Нужны Docker Compose v2.24+, `make`, Linux x86_64, Python 3.12 и Node.js/npm 20+. Для первой подготовки зависимостей и загрузки базовых Docker-образов требуется интернет. После этого локальные образы собираются без сети: `make deps` заранее подготавливает Python/frontend packages, Slither, allowlisted solc и FastEmbed MiniLM. Перенос подготовленных артефактов между платформами не поддерживается.
+Нужны Linux x86_64, Git, Docker с Compose v2.24+, `make`, Python 3.12 с поддержкой `venv`, Node.js 20+ и npm. Скрипты подготовки ожидают команду `python3.12`. Для FastEmbed необходима системная библиотека `libgomp.so.1`.
+
+Первую подготовку выполните с доступом к интернету: скачиваются базовые образы, зависимости, `solc` 0.8.24 и модель MiniLM. Затем образы приложения собираются без сети из подготовленных файлов.
 
 ```bash
+git clone https://github.com/vladweat/chainwise.git
+cd chainwise
 cp .env.example .env
-# Задайте локальные SECRET_KEY и POSTGRES_PASSWORD; секреты не коммитьте.
-make deps       # первый раз, с интернетом
-make up         # сборка и запуск; Compose build network отключён
+```
+
+Задайте в `.env` значения `SECRET_KEY` и `POSTGRES_PASSWORD`, например с помощью `openssl rand -hex 32`. Если нужен настоящий чат, добавьте `OPENAI_API_KEY` до запуска.
+
+```bash
+docker compose pull postgres redis qdrant
+docker pull python:3.12-slim
+docker pull node:20-alpine
+make deps
+make up
 make health
 ```
 
-Откройте <http://localhost:3001>, Swagger — <http://localhost:8001/docs>. Compose публикует порты только на loopback; backend и worker находят зависимости по именам Compose-сервисов. `OPENAI_API_KEY` нужен для реального RAG-чата, `ETHERSCAN_API_KEY` — только для загрузки по адресу. Для публичного доступа нужен отдельный HTTPS reverse proxy; см. [эксплуатацию](./docs/operations.md#public-https-entrypoint).
+Дождитесь запуска сервисов. В ответе `make health` поле `status` должно быть `ok`, а проверки зависимостей — успешными. Для диагностики используйте `docker compose ps` и `make logs`. Подробности подготовки и локального запуска — в [инструкции установки](./docs/setup.md).
 
-## Безопасное демо без внешних ключей
+| Сервис | Адрес |
+|---|---|
+| Веб-интерфейс | http://localhost:3001 |
+| Документация API | http://localhost:8001/docs |
+
+Для генерации ответов в чате задайте `OPENAI_API_KEY`; совместимый сервис и модель настраиваются через `OPENAI_BASE_URL` и `OPENAI_MODEL`. Для загрузки по адресу нужен `ETHERSCAN_API_KEY`. Файлы `.sol` и `.zip` можно загружать без ключа обозревателя блокчейна.
+
+Порты локального окружения привязаны к `127.0.0.1`. Порядок публичного развёртывания с HTTPS описан в [руководстве по эксплуатации](./docs/operations.md).
+
+## Первое знакомство
+
+1. Откройте веб-интерфейс и зарегистрируйтесь.
+2. Сохраните пример ниже как `Demo.sol`, загрузите его и дождитесь завершения анализа.
+3. Просмотрите найденные проблемы, оценку A–D и исходный код.
+4. Если настроен ключ чата, спросите «Что возвращает функция ping?» и перейдите к процитированным строкам.
+5. Скачайте PDF-отчёт; после демонстрации удалите контракт.
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.24;
+
+contract Demo {
+    function ping() external pure returns (uint256) {
+        return 7;
+    }
+}
+```
+
+Для воспроизводимой проверки без внешних ключей:
 
 ```bash
 make smoke-e2e
 ```
 
-Это ограниченный **mocked API smoke**, не браузерный live E2E: он загружает синтетический Solidity-контракт, проверяет индексацию, findings, advisory Risk Score, чужой tenant-доступ, цитаты и PDF; компилятор, Slither, Qdrant и LLM подменены заглушками. Используются PostgreSQL и Redis, а записи теста удаляются. Платные LLM credentials и настоящие пользовательские данные не нужны. Опциональный прогон настоящих solc, Slither, FastEmbed и Qdrant описан в [smoke/E2E](./docs/smoke-e2e.md).
+Команда проверяет загрузку, обработку, доступ пользователей, чат с цитатами, PDF и очистку тестовых записей. Внешние интеграции заменяются заглушками. Прогон с настоящими solc, Slither, FastEmbed и Qdrant описан в [инструкции проверки полного сценария](./docs/smoke-e2e.md).
 
-## Проверки и CI
+## Управление локальным окружением
 
-GitHub Actions на push и pull request запускает flake8, TypeScript typecheck, frontend tests для polling и Risk Score notice, а также backend pytest с PostgreSQL/Redis. Backend smoke использует заглушки для внешних сервисов; workflow не собирает release images и не выполняет dependency или image vulnerability scan. Команды разработки: `make test`, `make lint`, `cd frontend && npx tsc --noEmit`.
+```bash
+make logs       # журналы API и интерфейса
+make down       # остановка с сохранением данных
+make up-fast    # повторный запуск без пересборки
+```
 
-## Ограничения
+## Стек
 
-- Risk Score A–D — эвристически выведенный индикатор предварительной проверки на synthetic labels. Он не является калиброванной вероятностью, не измеряет вероятность эксплуатации и не заменяет независимый аудит. Sensitivity/specificity на реальных контрактах неизвестны; подробности — в [model card](./docs/risk-score-model-card.md).
-- Результаты не сертифицированы и не доказывают корректность бизнес-логики или поведение контракта в сети; статический анализ может пропускать проблемы и давать ложные срабатывания.
-- Compose production overlay не является готовой production-платформой. В репозитории нет автоматических backup/restore, restore drill, мониторинга/alerting или проверенной процедуры production rollback. Перед реальным deployment выполните [production gate и recovery runbook](./docs/operations.md#production-release-gate).
-- Runtime-ограничения analyzer снижают доступ и ресурсы, но не гарантируют защиту от container escape.
+**Сервер:** Python, FastAPI, SQLAlchemy, Alembic, Celery. **Интерфейс:** Next.js, React, TypeScript. **Данные:** PostgreSQL, Redis, Qdrant. **Анализ:** solc, Slither, FastEmbed, XGBoost с эвристическим резервным расчётом.
 
 ## Документация
 
-[Архитектура](./docs/architecture.md) · [Установка](./docs/setup.md) · [Фоновые задачи и решения по восстановлению](./docs/background-jobs.md) · [Эксплуатация](./docs/operations.md) · [Безопасность](./docs/security.md) · [API](./docs/api.md) · [Результаты проверок](./docs/verification-results.md) · [Документация целиком](./docs/README.md)
+- [Установка и настройка](./docs/setup.md)
+- [Архитектура и инженерные решения](./docs/architecture.md)
+- [Фоновые задачи и восстановление](./docs/background-jobs.md)
+- [Эксплуатация](./docs/operations.md) и [безопасность](./docs/security.md)
+- [Описание модели оценки A–D](./docs/risk-score-model-card.md)
+- [Результаты проверок](./docs/verification-results.md)
+- [Все документы](./docs/README.md)
